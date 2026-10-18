@@ -306,7 +306,7 @@ export default function OperatorDashboard() {
       <main className="flex-1 p-8 max-w-7xl mx-auto w-full space-y-8">
         {/* KPI Summary Cards */}
         {stats && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
             <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Capacity</span>
               <div className="text-3xl font-extrabold text-white mt-2">{stats.totalSlots} Slots</div>
@@ -329,13 +329,27 @@ export default function OperatorDashboard() {
             <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Available Slots</span>
               <div className="text-3xl font-extrabold text-emerald-400 mt-2">{stats.availableSlots}</div>
-              <p className="text-xs text-emerald-400/80 mt-1">Open for incoming vehicles</p>
+              <p className="text-xs text-emerald-400/80 mt-1">Open for incoming</p>
             </div>
 
             <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Active Live Sessions</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Active Sessions</span>
               <div className="text-3xl font-extrabold text-blue-400 mt-2">{stats.activeSessions}</div>
-              <p className="text-xs text-slate-400 mt-1">Vehicles inside facility</p>
+              <p className="text-xs text-slate-400 mt-1">Inside facility</p>
+            </div>
+
+            <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Today's Revenue</span>
+              <div className="text-3xl font-extrabold text-emerald-400 mt-2">
+                ₹{(stats.todayRevenue || 0).toFixed(2)}
+              </div>
+              <p className="text-xs text-emerald-400/80 mt-1">Fees collected today</p>
+            </div>
+
+            <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Exits Today</span>
+              <div className="text-3xl font-extrabold text-purple-400 mt-2">{stats.todayExits || 0}</div>
+              <p className="text-xs text-purple-400/80 mt-1">Vehicles checked out</p>
             </div>
           </div>
         )}
@@ -484,7 +498,114 @@ export default function OperatorDashboard() {
             </table>
           </div>
         </section>
+
+        {/* Completed Sessions Log */}
+        {token && (
+          <CompletedSessionsLog token={token} facilityId={selectedFacilityId} />
+        )}
       </main>
     </div>
+  );
+}
+
+function CompletedSessionsLog({ token, facilityId }: { token: string; facilityId: string }) {
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+
+  useEffect(() => {
+    if (!token) return;
+    const url = facilityId
+      ? `${API_BASE}/api/operator/sessions/${facilityId}?status=COMPLETED&limit=20`
+      : `${API_BASE}/api/operator/sessions?status=COMPLETED&limit=20`;
+
+    fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setSessions(data);
+        } else if (data.data && Array.isArray(data.data)) {
+          setSessions(data.data);
+        }
+      })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [token, facilityId, API_BASE]);
+
+  return (
+    <section className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow">
+      <div className="p-6 border-b border-slate-700 flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-white">Recent Completed Sessions</h2>
+          <p className="text-xs text-slate-400">History of vehicles that exited the facility</p>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs text-slate-300">
+          <thead className="bg-slate-900/80 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-700">
+            <tr>
+              <th className="px-6 py-3">Vehicle</th>
+              <th className="px-6 py-3">Driver</th>
+              <th className="px-6 py-3">Slot</th>
+              <th className="px-6 py-3">Duration</th>
+              <th className="px-6 py-3">Fee</th>
+              <th className="px-6 py-3">Exit Time</th>
+              <th className="px-6 py-3">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-700/60 font-medium">
+            {sessions.length > 0 ? (
+              sessions.map((s: any) => (
+                <tr key={s.id || s.sessionId} className="hover:bg-slate-750 transition-colors">
+                  <td className="px-6 py-4 font-mono font-bold text-white tracking-wide">
+                    {s.licensePlate || s.vehicle?.licensePlate || '—'}
+                  </td>
+                  <td className="px-6 py-4">
+                    <div>{s.userName || s.user?.name || '—'}</div>
+                    <div className="text-[10px] text-slate-400">{s.userPhone || s.user?.phone || ''}</div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="bg-slate-700 text-slate-200 px-2 py-0.5 rounded text-[11px] font-bold">
+                      {s.slotNumber || s.parkingSlot?.slotNumber || '—'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    {s.durationMinutes ? `${s.durationMinutes} min` : (s.duration ? `${Math.ceil(s.duration / 3600000)}h` : '—')}
+                  </td>
+                  <td className="px-6 py-4 font-bold text-emerald-400">
+                    ₹{Number(s.fee || s.totalFee || s.runningFee || 0).toFixed(2)}
+                  </td>
+                  <td className="px-6 py-4 text-slate-400">
+                    {s.exitTime ? new Date(s.exitTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                  </td>
+                  <td className="px-6 py-4">
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        s.paymentStatus === 'PAID'
+                          ? 'bg-emerald-900/60 text-emerald-300'
+                          : s.paymentStatus === 'DEBT'
+                          ? 'bg-rose-900/60 text-rose-300'
+                          : 'bg-amber-900/60 text-amber-300'
+                      }`}
+                    >
+                      {s.paymentStatus || 'COMPLETED'}
+                    </span>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={7} className="px-6 py-8 text-center text-slate-500 text-xs">
+                  {loading ? 'Loading completed sessions...' : 'No completed sessions recorded yet.'}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

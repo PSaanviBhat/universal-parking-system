@@ -75,51 +75,138 @@ operatorRouter.get('/stats/:facilityId', async (req: Request, res: Response): Pr
 });
 
 /**
+ * GET /api/operator/sessions
+ * Query params: ?status=COMPLETED&limit=20&facilityId=xyz
+ * Returns completed or filtered sessions list across facility or globally.
+ */
+operatorRouter.get('/sessions', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { status, limit = '20', facilityId } = req.query;
+    const whereClause: any = {};
+    if (facilityId) whereClause.facilityId = String(facilityId);
+    if (status) {
+      whereClause.status = String(status) as SessionStatus;
+    }
+
+    const sessions = await prisma.parkingSession.findMany({
+      where: whereClause,
+      include: {
+        vehicle: { select: { licensePlate: true, nickname: true } },
+        user: { select: { id: true, name: true, phone: true } },
+        slot: { select: { slotNumber: true, level: { select: { displayName: true, levelCode: true } } } },
+        entryGate: { select: { gateName: true } },
+        exitGate: { select: { gateName: true } },
+      },
+      orderBy: whereClause.status === SessionStatus.COMPLETED ? { exitTime: 'desc' } : { entryTime: 'desc' },
+      take: parseInt(String(limit)),
+    });
+
+    const now = new Date();
+    const formatted = sessions.map((s) => {
+      const exitDate = s.exitTime ? new Date(s.exitTime) : now;
+      const durationMs = exitDate.getTime() - new Date(s.entryTime).getTime();
+      const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
+      const durationHours = durationMinutes / 60;
+      const rate = Number(s.feeRateSnapshot);
+      const runningFee = Math.max(rate, Math.round(durationHours * rate * 100) / 100);
+      const finalFee = s.totalFee !== null && s.totalFee !== undefined ? Number(s.totalFee) : runningFee;
+
+      return {
+        id: s.id,
+        sessionId: s.id,
+        licensePlate: s.vehicle.licensePlate,
+        vehicleNickname: s.vehicle.nickname,
+        vehicle: { licensePlate: s.vehicle.licensePlate, nickname: s.vehicle.nickname },
+        userName: s.user.name,
+        userPhone: s.user.phone,
+        slotNumber: s.slot.slotNumber,
+        parkingSlot: { slotNumber: s.slot.slotNumber },
+        levelName: s.slot.level.displayName,
+        levelCode: s.slot.level.levelCode,
+        entryGate: s.entryGate.gateName,
+        exitGate: s.exitGate?.gateName || null,
+        entryTime: s.entryTime,
+        exitTime: s.exitTime,
+        durationMinutes,
+        duration: durationMs,
+        hourlyRate: rate,
+        runningFee: finalFee,
+        fee: finalFee,
+        totalFee: finalFee,
+        status: s.status,
+        paymentStatus: s.paymentStatus,
+      };
+    });
+
+    res.status(200).json(formatted);
+  } catch (error) {
+    console.error('[Operator Sessions Query Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to retrieve sessions.' });
+  }
+});
+
+/**
  * GET /api/operator/sessions/:facilityId
  * Lists active sessions in real-time with vehicle license plate,
  * entry time, slot, level, and dynamic running fee.
+ * Also supports optional query ?status=COMPLETED&limit=20
  */
 operatorRouter.get('/sessions/:facilityId', async (req: Request, res: Response): Promise<void> => {
   try {
     const facilityId = String(req.params.facilityId);
+    const { status, limit } = req.query;
+
+    const sessionStatus = status ? (String(status) as SessionStatus) : SessionStatus.ACTIVE;
 
     const sessions = await prisma.parkingSession.findMany({
       where: {
         facilityId,
-        status: SessionStatus.ACTIVE,
+        status: sessionStatus,
       },
       include: {
         vehicle: { select: { licensePlate: true, nickname: true } },
         user: { select: { id: true, name: true, phone: true } },
         slot: { select: { slotNumber: true, level: { select: { displayName: true, levelCode: true } } } },
         entryGate: { select: { gateName: true } },
+        exitGate: { select: { gateName: true } },
       },
-      orderBy: { entryTime: 'desc' },
+      orderBy: sessionStatus === SessionStatus.COMPLETED ? { exitTime: 'desc' } : { entryTime: 'desc' },
+      take: limit ? parseInt(String(limit)) : undefined,
     });
 
     const now = new Date();
 
     const formatted = sessions.map((s) => {
-      const durationMs = now.getTime() - new Date(s.entryTime).getTime();
+      const exitDate = s.exitTime ? new Date(s.exitTime) : now;
+      const durationMs = exitDate.getTime() - new Date(s.entryTime).getTime();
       const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
       const durationHours = durationMinutes / 60;
       const rate = Number(s.feeRateSnapshot);
       const runningFee = Math.max(rate, Math.round(durationHours * rate * 100) / 100);
+      const finalFee = s.totalFee !== null && s.totalFee !== undefined ? Number(s.totalFee) : runningFee;
 
       return {
+        id: s.id,
         sessionId: s.id,
         licensePlate: s.vehicle.licensePlate,
         vehicleNickname: s.vehicle.nickname,
+        vehicle: { licensePlate: s.vehicle.licensePlate, nickname: s.vehicle.nickname },
         userName: s.user.name,
         userPhone: s.user.phone,
         slotNumber: s.slot.slotNumber,
+        parkingSlot: { slotNumber: s.slot.slotNumber },
         levelName: s.slot.level.displayName,
         levelCode: s.slot.level.levelCode,
         entryGate: s.entryGate.gateName,
+        exitGate: s.exitGate?.gateName || null,
         entryTime: s.entryTime,
+        exitTime: s.exitTime,
         durationMinutes,
+        duration: durationMs,
         hourlyRate: rate,
-        runningFee,
+        runningFee: finalFee,
+        fee: finalFee,
+        totalFee: finalFee,
         status: s.status,
         paymentStatus: s.paymentStatus,
       };
@@ -127,8 +214,8 @@ operatorRouter.get('/sessions/:facilityId', async (req: Request, res: Response):
 
     res.status(200).json({ success: true, data: formatted });
   } catch (error) {
-    console.error('[Operator Active Sessions Error]', error);
-    res.status(500).json({ success: false, message: 'Failed to retrieve active sessions.' });
+    console.error('[Operator Facility Sessions Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to retrieve sessions.' });
   }
 });
 

@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/prisma';
 import QRCode from 'qrcode';
 import { v4 as uuidv4 } from 'uuid';
-import { FacilityType, GateType, SlotStatus } from '@prisma/client';
+import { FacilityType, GateType, SlotStatus, SessionStatus } from '@prisma/client';
 import { adminAuthGuard } from '../middleware/auth';
 
 export const adminRouter = Router();
@@ -401,3 +401,53 @@ adminRouter.post('/gates/validate-qr', async (req: Request, res: Response): Prom
     res.status(500).json({ success: false, message: 'Failed to validate QR code.' });
   }
 });
+
+/**
+ * GET /api/admin/stats
+ * Returns high-level platform stats:
+ * totalRevenue, todayRevenue, totalSessions, todayExits
+ */
+adminRouter.get('/stats', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [totalRevenueAgg, todayRevenueAgg, totalSessions, todayExits] = await Promise.all([
+      prisma.walletTransaction.aggregate({
+        _sum: { amount: true },
+        where: { type: { in: ['PARKING_CHARGE', 'AUTOPAY'] } },
+      }),
+      prisma.walletTransaction.aggregate({
+        _sum: { amount: true },
+        where: {
+          type: { in: ['PARKING_CHARGE', 'AUTOPAY'] },
+          createdAt: { gte: today },
+        },
+      }),
+      prisma.parkingSession.count(),
+      prisma.parkingSession.count({
+        where: {
+          status: SessionStatus.COMPLETED,
+          exitTime: { gte: today },
+        },
+      }),
+    ]);
+
+    const totalRevenue = Math.abs(Number(totalRevenueAgg._sum.amount ?? 0));
+    const todayRevenue = Math.abs(Number(todayRevenueAgg._sum.amount ?? 0));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalRevenue,
+        todayRevenue,
+        totalSessions,
+        todayExits,
+      },
+    });
+  } catch (error) {
+    console.error('[Admin Stats Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to retrieve admin stats.' });
+  }
+});
+
