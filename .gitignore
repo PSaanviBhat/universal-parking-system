@@ -1,0 +1,14 @@
+node_modules/
+dist/
+**/.env
+**/.env.*
+*.env
+*.log
+.DS_Store
+Thumbs.db
+.next/
+.flutter-plugins
+.flutter-plugins-dependencies
+.dart_tool/
+build/
+*.g.dart

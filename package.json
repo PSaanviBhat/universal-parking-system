@@ -1,0 +1,14 @@
+{
+  "name": "parking-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Universal Parking System — Monorepo Root",
+  "workspaces": [
+    "apps/backend",
+    "apps/dashboard"
+  ],
+  "scripts": {
+    "backend": "npm run dev --workspace=apps/backend",
+    "dashboard": "npm run dev --workspace=apps/dashboard"
+  }
+}

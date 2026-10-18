@@ -1,0 +1,202 @@
+UNIVERSAL PARKING SYSTEM — PRODUCT REQUIREMENTS
+
+1. VISION
+
+Build a universal vehicle parking system that eliminates unnecessary waiting, manual parking allocation, payment queues, and uncertainty about available parking spaces. The system will initially be deployed in malls and later expanded to other parking facilities such as offices, hospitals, airports, hotels, universities, and public parking areas.
+
+The core experience should be:
+
+REGISTER VEHICLE → ENTER → AUTOMATIC SLOT ALLOCATION → NAVIGATE TO SLOT → PARK → LEAVE → SCAN → AUTOMATIC PAYMENT (WALLET)
+
+The system must be simple enough for a first-time user and reliable enough for production use.
+
+2. PROBLEM
+
+Current mall parking systems commonly have the following problems:
+- Vehicles wait in queues at parking entrances.
+- Drivers do not know whether parking spaces are available.
+- Parking slots are allocated manually or inefficiently.
+- Drivers spend time searching for an available slot.
+- Drivers may forget where they parked.
+- Payment at exit creates queues.
+- Cash/card/payment failures can delay exit.
+- Manual entry and exit processes can result in incorrect parking records.
+- Parking operators have limited visibility into real-time occupancy.
+- Vehicles can potentially occupy slots without a valid parking session.
+- Incorrect or duplicate entries can create billing and availability problems.
+
+3. SOLUTION
+
+The app provides a single parking account where users register their vehicles and maintain a parking wallet.
+When a registered vehicle enters a participating parking facility:
+
+1. The user scans the facility's entry QR code using the app.
+2. The system verifies the user's vehicle and parking eligibility.
+3. The user's parking session begins.
+4. One available parking slot is automatically assigned.
+5. The assigned parking level and slot are clearly displayed.
+6. The user is provided with directions to the assigned slot.
+7. The parking facility's staff/operator system simultaneously records the entry.
+
+The user then parks in the assigned slot.
+When leaving:
+
+1. The user reaches the exit kiosk.
+2. The user scans the exit QR code using the app.
+3. The system verifies the active parking session.
+4. The parking duration and applicable parking fee are calculated.
+5. The fee is deducted automatically from the user's parking wallet.
+6. The parking session is closed.
+7. The assigned slot immediately becomes available again.
+8. The user is cleared to exit.
+
+4. VEHICLE REGISTRATION
+
+Every user must register their vehicle before using the parking service. A vehicle profile should contain the information required to uniquely identify the vehicle and associate it with the user's parking account. A user may have multiple registered vehicles but must select the vehicle being used before starting a parking session. A vehicle cannot have multiple active parking sessions simultaneously.
+
+5. PARKING ENTRY
+
+A parking session can only begin through a valid entry process.
+The system must ensure that:
+- Only registered vehicles can start a parking session.
+- An entry cannot create multiple active sessions accidentally.
+- A vehicle already inside the facility cannot be registered as entering again.
+- Entry is recorded against the correct facility and vehicle.
+- A parking slot is assigned only if a valid slot is available.
+- The assigned slot cannot simultaneously be assigned to another vehicle.
+- The user and parking operator should have consistent entry information.
+If no parking space is available, the system must clearly indicate that parking is currently unavailable rather than creating a false allocation.
+
+6. PARKING SLOT ALLOCATION
+
+Every parking slot belongs to a specific parking facility and parking level. When a vehicle enters, the system automatically assigns an available slot.
+The user must be shown:
+- Parking facility
+- Parking level
+- Slot number
+- Clear location information
+- Directions to the assigned slot
+A slot assigned to a vehicle must be considered unavailable to other users until that parking session ends. A user should not be able to voluntarily claim an occupied or unavailable slot.
+
+7. PARKING SESSION
+
+Each active parking session must have:
+- Vehicle
+- User
+- Parking facility
+- Assigned slot
+- Entry time
+- Current status
+- Applicable parking fee
+- Exit time once the session ends
+The parking session remains active until a valid exit is completed.
+The system must prevent accidental duplicate sessions, duplicate exits, and inconsistent parking states.
+
+8. PARKING WALLET
+
+The app contains a prepaid parking wallet. Users can add money to their wallet before parking. The wallet balance is used to automatically pay parking charges when the vehicle exits.
+The system must clearly show:
+- Current wallet balance
+- Parking charge
+- Amount deducted
+- Remaining balance
+- Transaction history
+A parking session should not be considered successfully completed if the required payment cannot be collected. Users should receive a clear indication when their wallet balance is insufficient for parking.
+
+9. PARKING EXIT
+
+Exit must only be permitted for a vehicle with a valid active parking session.
+When the user scans the exit QR:
+- The correct parking session is identified.
+- The parking duration is determined.
+- The applicable charge is calculated.
+- Payment is collected from the wallet.
+- The session is closed.
+- The parking slot is released.
+- The vehicle is marked as exited.
+A previously completed parking session must never be charged again through another exit attempt.
+
+10. OPERATOR / KIOSK VERIFICATION
+
+The parking facility must have an operator-facing system that records and verifies vehicle movement. When a customer enters, the operator should be able to see the corresponding entry and assigned parking slot. This provides a second layer of verification and prevents situations where the app and physical parking facility have conflicting records.
+The operator should be able to identify:
+- Vehicles currently inside
+- Assigned parking slots
+- Entry records
+- Active parking sessions
+- Exit status
+- Payment status
+- Available and occupied parking spaces
+
+11. FAILURE AND EXCEPTION HANDLING
+
+The system must account for real-world situations including:
+- No available parking slots
+- Insufficient wallet balance
+- Duplicate entry attempts
+- Duplicate exit attempts
+- QR code being scanned incorrectly
+- User attempting to exit without an active session
+- Vehicle already marked as inside
+- Vehicle attempting to use another vehicle's session
+- Assigned slot becoming unavailable
+- User losing access to the app while inside
+- User forgetting the assigned slot
+- Parking session remaining active unintentionally
+- Payment failure
+- Operator needing to resolve a disputed parking session
+No failure should silently create an incorrect parking record, charge, or slot allocation.
+
+12. PARKING STATUS
+
+The system must always maintain a clear state for every vehicle and parking slot.
+A vehicle should have a clearly identifiable state such as:
+
+NOT PARKED → ENTERING → PARKED → EXITING → EXITED
+
+A parking slot should have a clearly identifiable state such as:
+
+AVAILABLE → RESERVED/ASSIGNED → OCCUPIED → RELEASED
+
+A vehicle and slot must never simultaneously appear in contradictory states.
+
+13. USER EXPERIENCE
+
+The process should require minimal user interaction.
+The ideal user experience is:
+1. Register vehicle once.
+2. Maintain wallet balance.
+3. Scan entry QR.
+4. Receive automatic slot allocation and directions.
+5. Park.
+6. Scan exit QR.
+7. Payment happens automatically.
+8. Leave.
+The user should not have to manually search for a parking slot, calculate parking charges, or wait in a payment queue.
+
+14. FUTURE EXPANSION
+
+The system should be designed as a universal parking platform rather than a mall-specific application. The same user account, vehicle registration, wallet, parking session, and parking experience should eventually work across multiple participating parking facilities.
+Potential facilities include:
+
+- Malls
+- Offices
+- Hospitals
+- Airports
+- Hotels
+- Universities
+- Public parking facilities
+- Commercial buildings
+- Event venues
+The core parking experience should remain consistent regardless of the facility.
+
+15. PRIMARY OBJECTIVE
+
+The system's primary objective is to make parking:
+
+FAST — Minimize entry, parking-search, and exit waiting time.
+AUTOMATIC — Minimize manual allocation and payment.
+FOOLPROOF — Prevent duplicate, invalid, or conflicting parking records.
+TRANSPARENT — Clearly show parking status, slot, duration, and charges.
+SCALABLE — Work across multiple parking facilities.
+RELIABLE — Maintain correct vehicle, slot, session, and payment states throughout the entire parking lifecycle.
