@@ -1,0 +1,31 @@
+services:
+  # ─── BACKEND WEB SERVICE (Free Tier) ───────────────────────────────────────
+  - type: web
+    name: parking-backend
+    env: node
+    plan: free
+    region: singapore # or oregon / frankfurt
+    rootDir: apps/backend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false # Set via Render dashboard using your Neon PostgreSQL URL
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: DASHBOARD_URL
+        sync: false # Set to your deployed Vercel dashboard URL
+      - key: DEFAULT_FEE_RATE_PER_HOUR
+        value: "30"
+      - key: MINIMUM_WALLET_TOPUP
+        value: "35"
+      - key: DEBT_REPAYMENT_WINDOW_HOURS
+        value: "48"
