@@ -817,4 +817,113 @@ sessionRouter.post('/:id/reassign', async (req: AuthenticatedRequest, res: Respo
   }
 });
 
+/**
+ * GET /api/sessions/:id
+ * Retrieves a single parking session by ID with facility, slot, vehicle, and live billing.
+ */
+sessionRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    const { id } = req.params;
+
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized.' });
+      return;
+    }
+
+    const session = await prisma.parkingSession.findFirst({
+      where: {
+        id: String(id),
+        userId,
+      },
+      include: {
+        facility: {
+          select: {
+            id: true,
+            name: true,
+            address: true,
+            feeRatePerHour: true,
+          },
+        },
+        vehicle: {
+          select: {
+            id: true,
+            licensePlate: true,
+            nickname: true,
+          },
+        },
+        slot: {
+          select: {
+            id: true,
+            slotNumber: true,
+            coordinateX: true,
+            coordinateY: true,
+            level: {
+              select: {
+                id: true,
+                levelCode: true,
+                displayName: true,
+                floorMapUrl: true,
+              },
+            },
+          },
+        },
+        entryGate: {
+          select: {
+            id: true,
+            gateName: true,
+          },
+        },
+        exitGate: {
+          select: {
+            id: true,
+            gateName: true,
+          },
+        },
+        walletTransactions: {
+          select: {
+            id: true,
+            type: true,
+            amount: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      res.status(404).json({ success: false, message: 'Parking session not found.' });
+      return;
+    }
+
+    // If session is currently ACTIVE, calculate running duration and live fee
+    let runningFee: number | null = null;
+    let durationMinutes = session.durationMinutes;
+
+    if (session.status === 'ACTIVE') {
+      const now = new Date();
+      const durationMs = now.getTime() - new Date(session.entryTime).getTime();
+      durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
+      const durationHours = durationMinutes / 60;
+      const rate = Number(session.feeRateSnapshot);
+      runningFee = Math.max(rate, Math.round(durationHours * rate * 100) / 100);
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        ...session,
+        feeRateSnapshot: Number(session.feeRateSnapshot),
+        totalFee: session.totalFee ? Number(session.totalFee) : null,
+        durationMinutes,
+        runningFee,
+      },
+    });
+  } catch (error) {
+    console.error('[Get Session Details Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to retrieve session details.' });
+  }
+});
+
+
 

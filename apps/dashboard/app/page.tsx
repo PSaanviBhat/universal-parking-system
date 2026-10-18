@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
+
 
 interface FacilityStats {
   facility: { id: string; name: string; feeRatePerHour: number };
@@ -50,6 +52,9 @@ interface LevelSlots {
 }
 
 export default function OperatorDashboard() {
+  const router = useRouter();
+  const [token, setToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [facilities, setFacilities] = useState<any[]>([]);
   const [selectedFacilityId, setSelectedFacilityId] = useState<string>('');
   const [stats, setStats] = useState<FacilityStats | null>(null);
@@ -62,11 +67,36 @@ export default function OperatorDashboard() {
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
+  const handleLogout = () => {
+    localStorage.removeItem('parking_token');
+    localStorage.removeItem('parking_role');
+    localStorage.removeItem('parking_user');
+    router.push('/login');
+  };
+
+  // 0. Auth Guard Check
+  useEffect(() => {
+    const savedToken = localStorage.getItem('parking_token');
+    if (!savedToken) {
+      router.push('/login');
+      return;
+    }
+    setToken(savedToken);
+    const savedUser = localStorage.getItem('parking_user');
+    if (savedUser) {
+      try {
+        setCurrentUser(JSON.parse(savedUser));
+      } catch (_) {}
+    }
+  }, [router]);
+
   // 1. Initial Load: Fetch facilities
   useEffect(() => {
+    if (!token) return;
+
     async function loadFacilities() {
       try {
-        const res = await fetch(`${API_BASE}/api/admin/facilities`);
+        const res = await fetch(`${API_BASE}/api/facilities`);
         const json = await res.json();
         if (json.success && json.data.length > 0) {
           setFacilities(json.data);
@@ -79,7 +109,8 @@ export default function OperatorDashboard() {
       }
     }
     loadFacilities();
-  }, [API_BASE]);
+  }, [API_BASE, token]);
+
 
   // 2. Setup Socket.io connection & room join
   useEffect(() => {
@@ -119,12 +150,25 @@ export default function OperatorDashboard() {
   // 3. Refresh Dashboard Data
   async function refreshData(facId: string) {
     if (!facId) return;
+    const authToken = token || localStorage.getItem('parking_token');
+    if (!authToken) return;
+
     try {
+      const authHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      };
+
       const [resStats, resSessions, resSlots] = await Promise.all([
-        fetch(`${API_BASE}/api/operator/stats/${facId}`),
-        fetch(`${API_BASE}/api/operator/sessions/${facId}`),
-        fetch(`${API_BASE}/api/operator/slots/${facId}`),
+        fetch(`${API_BASE}/api/operator/stats/${facId}`, { headers: authHeaders }),
+        fetch(`${API_BASE}/api/operator/sessions/${facId}`, { headers: authHeaders }),
+        fetch(`${API_BASE}/api/operator/slots/${facId}`, { headers: authHeaders }),
       ]);
+
+      if (resStats.status === 401 || resSessions.status === 401 || resSlots.status === 401) {
+        handleLogout();
+        return;
+      }
 
       const jsonStats = await resStats.json();
       const jsonSessions = await resSessions.json();
@@ -144,12 +188,12 @@ export default function OperatorDashboard() {
   }
 
   useEffect(() => {
-    if (selectedFacilityId) {
+    if (selectedFacilityId && token) {
       refreshData(selectedFacilityId);
       const interval = setInterval(() => refreshData(selectedFacilityId), 15000);
       return () => clearInterval(interval);
     }
-  }, [selectedFacilityId]);
+  }, [selectedFacilityId, token]);
 
   function showNotice(msg: string) {
     setNotification(msg);
@@ -157,12 +201,22 @@ export default function OperatorDashboard() {
   }
 
   async function handleResolve(sessionId: string, action: 'FORCE_CLOSE' | 'DISPUTE') {
+    const authToken = token || localStorage.getItem('parking_token');
+    if (!authToken) return;
+
     try {
       const res = await fetch(`${API_BASE}/api/operator/sessions/${sessionId}/resolve`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify({ action, resolutionNote: 'Resolved from operator portal' }),
       });
+      if (res.status === 401) {
+        handleLogout();
+        return;
+      }
       const json = await res.json();
       if (json.success) {
         showNotice(action === 'FORCE_CLOSE' ? 'Session force-closed and slot freed!' : 'Session flagged as DISPUTED.');
@@ -173,7 +227,19 @@ export default function OperatorDashboard() {
     }
   }
 
+
   const currentLevel = levels.find((l) => l.levelCode === selectedLevelCode) || levels[0];
+
+  if (!token) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400 text-sm">
+        <div className="flex items-center space-x-3">
+          <div className="animate-spin rounded-full h-5 w-5 border-2 border-blue-500 border-t-transparent" />
+          <span>Verifying authentication...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
@@ -189,23 +255,39 @@ export default function OperatorDashboard() {
           </div>
         </div>
 
-        {/* Facility Selector */}
-        <div className="flex items-center space-x-3">
-          <label className="text-sm font-medium text-slate-400">Select Facility:</label>
-          <select
-            value={selectedFacilityId}
-            onChange={(e) => {
-              setSelectedFacilityId(e.target.value);
-              setSelectedLevelCode('');
-            }}
-            className="bg-slate-800 border border-slate-700 text-white rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        {/* User Badge, Facility Selector & Logout */}
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-3">
+            <label className="text-sm font-medium text-slate-400">Select Facility:</label>
+            <select
+              value={selectedFacilityId}
+              onChange={(e) => {
+                setSelectedFacilityId(e.target.value);
+                setSelectedLevelCode('');
+              }}
+              className="bg-slate-800 border border-slate-700 text-white rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {facilities.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name} (₹{f.feeRatePerHour}/hr)
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {currentUser && (
+            <div className="hidden sm:flex items-center space-x-2 bg-slate-800/80 border border-slate-700/80 px-3 py-1.5 rounded-lg text-xs">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              <span className="font-semibold text-slate-200">{currentUser.username || 'Operator'}</span>
+            </div>
+          )}
+
+          <button
+            onClick={handleLogout}
+            className="px-3 py-1.5 bg-red-600/20 hover:bg-red-600 border border-red-500/30 hover:border-red-500 text-red-200 hover:text-white rounded-lg text-xs font-semibold transition-all shadow"
           >
-            {facilities.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name} (₹{f.feeRatePerHour}/hr)
-              </option>
-            ))}
-          </select>
+            Logout
+          </button>
         </div>
       </header>
 

@@ -24,6 +24,8 @@ import { sessionRouter } from './routes/sessions';
 import { operatorRouter } from './routes/operator';
 import { operatorAuthRouter } from './routes/operatorAuth';
 import { adminAuthRouter } from './routes/adminAuth';
+import { paymentMethodsRouter } from './routes/paymentMethods';
+import { facilitiesRouter } from './routes/facilities';
 import { processExpiredDebts } from './services/debtWorker';
 
 const app = express();
@@ -66,6 +68,9 @@ app.use('/api/wallet', walletRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/sessions', sessionRouter);
 app.use('/api/operator', operatorRouter);
+app.use('/api/payment-methods', paymentMethodsRouter);
+app.use('/api/facilities', facilitiesRouter);
+
 
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 app.use((_req: Request, res: Response) => {
