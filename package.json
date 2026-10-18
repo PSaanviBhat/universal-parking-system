@@ -12,6 +12,7 @@
     "dashboard": "npm run dev --workspace=apps/dashboard",
     "build:backend": "npm run build --workspace=apps/backend",
     "build:dashboard": "npm run build --workspace=apps/dashboard",
-    "build": "npm run build --workspaces"
+    "build": "npm run build --workspaces",
+    "start:backend": "npm run start --workspace=apps/backend"
   }
 }
