@@ -629,9 +629,9 @@ sessionRouter.get('/history', async (req: AuthenticatedRequest, res: Response): 
     const skip = (page - 1) * limit;
 
     const [total, sessions] = await Promise.all([
-      prisma.parkingSession.count({ where: { userId, status: SessionStatus.COMPLETED } }),
+      prisma.parkingSession.count({ where: { userId, status: { in: [SessionStatus.COMPLETED, SessionStatus.DISPUTED] } } }),
       prisma.parkingSession.findMany({
-        where: { userId, status: SessionStatus.COMPLETED },
+        where: { userId, status: { in: [SessionStatus.COMPLETED, SessionStatus.DISPUTED] } },
         orderBy: { exitTime: 'desc' },
         skip,
         take: limit,
@@ -694,7 +694,7 @@ sessionRouter.post('/:id/reassign', async (req: AuthenticatedRequest, res: Respo
   try {
     const userId = req.user?.userId;
     const sessionId = String(req.params.id);
-    const { reason } = req.body;
+    const { reason, newSlotId } = req.body;
 
     if (!userId) {
       res.status(401).json({ success: false, message: 'Unauthorized.' });
@@ -721,25 +721,52 @@ sessionRouter.post('/:id/reassign', async (req: AuthenticatedRequest, res: Respo
     const oldSlotId = session.slotId;
     const oldSlotNumber = session.slot.slotNumber;
 
-    // Find and reassign new available slot atomically
+    // Find and reassign new available slot atomically with optimistic locking
     const reassignedResult = await prisma.$transaction(async (tx) => {
-      // Find new available slot in same facility
-      const newSlot = await tx.parkingSlot.findFirst({
-        where: {
-          facilityId: session.facilityId,
-          status: SlotStatus.AVAILABLE,
-          isActive: true,
-          id: { not: oldSlotId },
-        },
-        include: { level: true },
-        orderBy: [{ level: { levelCode: 'asc' } }, { slotNumber: 'asc' }],
-      });
+      // Find candidate slot: either specified by newSlotId or first available
+      const candidateSlot = newSlotId
+        ? await tx.parkingSlot.findFirst({
+            where: {
+              id: String(newSlotId),
+              facilityId: session.facilityId,
+              status: SlotStatus.AVAILABLE,
+              isActive: true,
+            },
+            include: { level: true },
+          })
+        : await tx.parkingSlot.findFirst({
+            where: {
+              facilityId: session.facilityId,
+              status: SlotStatus.AVAILABLE,
+              isActive: true,
+              id: { not: oldSlotId },
+            },
+            include: { level: true },
+            orderBy: [{ level: { levelCode: 'asc' } }, { slotNumber: 'asc' }],
+          });
 
-      if (!newSlot) {
+      if (!candidateSlot) {
         return null;
       }
 
-      // Mark old slot as inactive or available (marked inactive if obstructed)
+      // Optimistic lock: attempt to claim the slot
+      const updateResult = await tx.parkingSlot.updateMany({
+        where: {
+          id: candidateSlot.id,
+          status: SlotStatus.AVAILABLE,
+          updatedAt: candidateSlot.updatedAt,
+        },
+        data: {
+          status: SlotStatus.RESERVED_OCCUPIED,
+          currentSessionId: session.id,
+        },
+      });
+
+      if (updateResult.count === 0) {
+        throw new Error('Slot no longer available');
+      }
+
+      // Mark old slot as inactive or available (flagged for operator inspection)
       await tx.parkingSlot.update({
         where: { id: oldSlotId },
         data: {
@@ -749,25 +776,20 @@ sessionRouter.post('/:id/reassign', async (req: AuthenticatedRequest, res: Respo
         },
       });
 
-      // Assign new slot
-      const updatedNewSlot = await tx.parkingSlot.update({
-        where: { id: newSlot.id },
-        data: {
-          status: SlotStatus.RESERVED_OCCUPIED,
-          currentSessionId: session.id,
-        },
-        include: { level: true },
-      });
-
       // Update session with new slot ID
       const updatedSession = await tx.parkingSession.update({
         where: { id: session.id },
-        data: { slotId: updatedNewSlot.id },
+        data: { slotId: candidateSlot.id },
+      });
+
+      const updatedNewSlot = await tx.parkingSlot.findUnique({
+        where: { id: candidateSlot.id },
+        include: { level: true },
       });
 
       return {
         session: updatedSession,
-        newSlot: updatedNewSlot,
+        newSlot: updatedNewSlot!,
         oldSlotNumber,
       };
     });

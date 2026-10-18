@@ -1,10 +1,19 @@
 import { Router, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import { prisma } from '../utils/prisma';
 import { authGuard, AuthenticatedRequest } from '../middleware/auth';
 
 export const authRouter = Router();
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 /**
  * POST /api/auth/register
@@ -23,18 +32,26 @@ authRouter.post('/register', async (req, res): Promise<void> => {
       return;
     }
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const phoneRegex = /^\d{10}$/;
+
+    if (!emailRegex.test(String(email).trim())) {
+      res.status(400).json({ success: false, message: 'Invalid email address', error: 'Invalid email address' });
+      return;
+    }
+    if (!phoneRegex.test(String(phone).trim())) {
+      res.status(400).json({ success: false, message: 'Phone must be 10 digits', error: 'Phone must be 10 digits' });
+      return;
+    }
+    if (String(password).length < 8) {
+      res.status(400).json({ success: false, message: 'Password must be at least 8 characters', error: 'Password must be at least 8 characters' });
+      return;
+    }
+
     if (!tcAccepted) {
       res.status(400).json({
         success: false,
         message: 'You must accept the Terms & Conditions and Autopay Debit authorization to register.',
-      });
-      return;
-    }
-
-    if (password.length < 6) {
-      res.status(400).json({
-        success: false,
-        message: 'Password must be at least 6 characters long.',
       });
       return;
     }
@@ -124,7 +141,7 @@ authRouter.post('/register', async (req, res): Promise<void> => {
  * POST /api/auth/login
  * Validates email/password, checks suspension/blacklist status, returns token.
  */
-authRouter.post('/login', async (req, res): Promise<void> => {
+authRouter.post('/login', loginLimiter, async (req, res): Promise<void> => {
   try {
     const { email, password } = req.body;
 
