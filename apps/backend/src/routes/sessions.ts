@@ -164,21 +164,33 @@ sessionRouter.post('/entry', async (req: AuthenticatedRequest, res: Response): P
         },
       });
 
-      // Update slot state to RESERVED_OCCUPIED (Unified state)
-      const updatedSlot = await tx.parkingSlot.update({
-        where: { id: availableSlot.id },
+      // Optimistic Concurrency Control: Update slot ONLY if status is still AVAILABLE
+      // If another transaction claimed this slot in the same microsecond, count will be 0 and throw
+      const updateResult = await tx.parkingSlot.updateMany({
+        where: {
+          id: availableSlot.id,
+          status: SlotStatus.AVAILABLE,
+          updatedAt: availableSlot.updatedAt,
+        },
         data: {
           status: SlotStatus.RESERVED_OCCUPIED,
           currentSessionId: newSession.id,
         },
-        include: {
-          level: true,
-        },
+      });
+
+      if (updateResult.count === 0) {
+        // Race condition hit: another request grabbed this slot concurrently -> abort to trigger retry or clean 409
+        throw new Error('SLOT_CONCURRENCY_CONFLICT');
+      }
+
+      const updatedSlot = await tx.parkingSlot.findUnique({
+        where: { id: availableSlot.id },
+        include: { level: true },
       });
 
       return {
         session: newSession,
-        slot: updatedSlot,
+        slot: updatedSlot!,
         facility: gate.facility,
       };
     });
@@ -243,6 +255,13 @@ sessionRouter.post('/entry', async (req: AuthenticatedRequest, res: Response): P
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.message === 'SLOT_CONCURRENCY_CONFLICT') {
+      res.status(409).json({
+        success: false,
+        message: 'Parking Full. There are currently no available parking slots at this facility.',
+      });
+      return;
+    }
     console.error('[Session Entry Error]', error);
     res.status(500).json({
       success: false,
@@ -660,4 +679,142 @@ sessionRouter.get('/history', async (req: AuthenticatedRequest, res: Response): 
     });
   }
 });
+
+/**
+ * POST /api/sessions/:id/reassign
+ * Edge Case Handler: "Assigned slot becomes unavailable"
+ * (e.g. physical obstruction, oil spill, sensor conflict)
+ *
+ * Product Decision:
+ * 1. Automatically reassigns an alternative available slot in the same facility.
+ * 2. Alerts operator via real-time WebSocket broadcast.
+ * 3. Keeps user active session running seamlessly with updated slot and navigation.
+ */
+sessionRouter.post('/:id/reassign', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    const sessionId = String(req.params.id);
+    const { reason } = req.body;
+
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized.' });
+      return;
+    }
+
+    const session = await prisma.parkingSession.findUnique({
+      where: { id: sessionId },
+      include: {
+        slot: { include: { level: true } },
+        vehicle: true,
+        facility: true,
+      },
+    });
+
+    if (!session || session.userId !== userId || session.status !== SessionStatus.ACTIVE) {
+      res.status(404).json({
+        success: false,
+        message: 'Active parking session not found.',
+      });
+      return;
+    }
+
+    const oldSlotId = session.slotId;
+    const oldSlotNumber = session.slot.slotNumber;
+
+    // Find and reassign new available slot atomically
+    const reassignedResult = await prisma.$transaction(async (tx) => {
+      // Find new available slot in same facility
+      const newSlot = await tx.parkingSlot.findFirst({
+        where: {
+          facilityId: session.facilityId,
+          status: SlotStatus.AVAILABLE,
+          isActive: true,
+          id: { not: oldSlotId },
+        },
+        include: { level: true },
+        orderBy: [{ level: { levelCode: 'asc' } }, { slotNumber: 'asc' }],
+      });
+
+      if (!newSlot) {
+        return null;
+      }
+
+      // Mark old slot as inactive or available (marked inactive if obstructed)
+      await tx.parkingSlot.update({
+        where: { id: oldSlotId },
+        data: {
+          status: SlotStatus.AVAILABLE,
+          currentSessionId: null,
+          isActive: false, // Flagged for operator inspection
+        },
+      });
+
+      // Assign new slot
+      const updatedNewSlot = await tx.parkingSlot.update({
+        where: { id: newSlot.id },
+        data: {
+          status: SlotStatus.RESERVED_OCCUPIED,
+          currentSessionId: session.id,
+        },
+        include: { level: true },
+      });
+
+      // Update session with new slot ID
+      const updatedSession = await tx.parkingSession.update({
+        where: { id: session.id },
+        data: { slotId: updatedNewSlot.id },
+      });
+
+      return {
+        session: updatedSession,
+        newSlot: updatedNewSlot,
+        oldSlotNumber,
+      };
+    });
+
+    if (!reassignedResult) {
+      res.status(409).json({
+        success: false,
+        message: 'No alternative slots available in facility. Please contact parking staff.',
+      });
+      return;
+    }
+
+    // Alert operator via WebSocket
+    io.to(`facility:${session.facilityId}`).emit('slot:reassigned', {
+      sessionId: session.id,
+      licensePlate: session.vehicle.licensePlate,
+      oldSlotNumber: reassignedResult.oldSlotNumber,
+      newSlotNumber: reassignedResult.newSlot.slotNumber,
+      levelName: reassignedResult.newSlot.level.displayName,
+      reason: reason || 'Assigned slot became obstructed/unavailable',
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Slot successfully reassigned to ${reassignedResult.newSlot.slotNumber} on ${reassignedResult.newSlot.level.displayName}. Operator alerted.`,
+      data: {
+        sessionId: session.id,
+        oldSlotNumber: reassignedResult.oldSlotNumber,
+        newAssignedSlot: {
+          slotId: reassignedResult.newSlot.id,
+          slotNumber: reassignedResult.newSlot.slotNumber,
+          levelCode: reassignedResult.newSlot.level.levelCode,
+          levelName: reassignedResult.newSlot.level.displayName,
+          floorMapUrl: reassignedResult.newSlot.level.floorMapUrl,
+          coordinateX: reassignedResult.newSlot.coordinateX,
+          coordinateY: reassignedResult.newSlot.coordinateY,
+          directions: `Proceed to ${reassignedResult.newSlot.level.displayName}, follow row markers to new Slot ${reassignedResult.newSlot.slotNumber}.`,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[Slot Reassignment Error]', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reassign parking slot.',
+    });
+  }
+});
+
 
