@@ -84,7 +84,10 @@ authRouter.post('/register', async (req, res): Promise<void> => {
     });
 
     // Sign JWT
-    const secret = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      throw new Error('JWT_SECRET is not configured on the server.');
+    }
     const token = jwt.sign(
       { userId: user.id, email: user.email, phone: user.phone },
       secret,
@@ -157,7 +160,10 @@ authRouter.post('/login', async (req, res): Promise<void> => {
       return;
     }
 
-    const secret = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      throw new Error('JWT_SECRET is not configured on the server.');
+    }
     const token = jwt.sign(
       { userId: user.id, email: user.email, phone: user.phone },
       secret,

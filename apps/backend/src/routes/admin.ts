@@ -3,6 +3,7 @@ import { prisma } from '../utils/prisma';
 import QRCode from 'qrcode';
 import { v4 as uuidv4 } from 'uuid';
 import { FacilityType, GateType, SlotStatus } from '@prisma/client';
+import { adminAuthGuard } from '../middleware/auth';
 
 export const adminRouter = Router();
 
@@ -43,7 +44,7 @@ export function parseGateQrPayload(qrData: string): { gateId: string; facilityId
  * POST /api/admin/facilities
  * Creates a parking facility with address, type, and hourly fee rate.
  */
-adminRouter.post('/facilities', async (req: Request, res: Response): Promise<void> => {
+adminRouter.post('/facilities', adminAuthGuard, async (req: Request, res: Response): Promise<void> => {
   try {
     const { name, type, address, feeRatePerHour } = req.body;
 
@@ -152,7 +153,7 @@ adminRouter.get('/facilities/:id', async (req: Request, res: Response): Promise<
  * POST /api/admin/facilities/:id/levels
  * Adds a parking level to a facility.
  */
-adminRouter.post('/facilities/:id/levels', async (req: Request, res: Response): Promise<void> => {
+adminRouter.post('/facilities/:id/levels', adminAuthGuard, async (req: Request, res: Response): Promise<void> => {
   try {
     const facilityId = String(req.params.id);
     const { levelCode, displayName, totalSlots, floorMapUrl } = req.body;
@@ -183,7 +184,7 @@ adminRouter.post('/facilities/:id/levels', async (req: Request, res: Response): 
  * POST /api/admin/levels/:levelId/slots
  * Adds individual or bulk slots to a level.
  */
-adminRouter.post('/levels/:levelId/slots', async (req: Request, res: Response): Promise<void> => {
+adminRouter.post('/levels/:levelId/slots', adminAuthGuard, async (req: Request, res: Response): Promise<void> => {
   try {
     const levelId = String(req.params.levelId);
     const { count, prefix, startingNumber } = req.body;
@@ -245,7 +246,7 @@ adminRouter.post('/levels/:levelId/slots', async (req: Request, res: Response): 
  * POST /api/admin/facilities/:id/gates
  * Adds an Entry or Exit gate to a facility with an auto-generated unique QR string.
  */
-adminRouter.post('/facilities/:id/gates', async (req: Request, res: Response): Promise<void> => {
+adminRouter.post('/facilities/:id/gates', adminAuthGuard, async (req: Request, res: Response): Promise<void> => {
   try {
     const facilityId = String(req.params.id);
     const { gateName, gateType } = req.body;

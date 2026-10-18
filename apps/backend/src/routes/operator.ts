@@ -1,9 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/prisma';
 import { io } from '../index';
-import { SessionStatus, PaymentStatus, SlotStatus } from '@prisma/client';
+import { SessionStatus, PaymentStatus, SlotStatus, TransactionType } from '@prisma/client';
+import { operatorAuthGuard, AuthenticatedRequest } from '../middleware/auth';
 
 export const operatorRouter = Router();
+
+// Apply operator auth guard to all operator endpoints
+operatorRouter.use(operatorAuthGuard);
 
 /**
  * GET /api/operator/stats/:facilityId
@@ -215,17 +219,74 @@ operatorRouter.patch('/sessions/:id/resolve', async (req: Request, res: Response
       return;
     }
 
-    // FORCE_CLOSE: release slot and mark session as completed
+    // FORCE_CLOSE: Calculate fee, settle against user wallet, release slot, and mark session as completed
+    const exitTime = new Date();
+    const entryTime = new Date(session.entryTime);
+    const durationMs = exitTime.getTime() - entryTime.getTime();
+    const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
+    const durationHours = durationMinutes / 60;
+    const hourlyRate = Number(session.feeRateSnapshot);
+    const totalFee = Math.max(hourlyRate, Math.round(durationHours * hourlyRate * 100) / 100);
+
     const result = await prisma.$transaction(async (tx) => {
-      const closed = await tx.parkingSession.update({
-        where: { id: sessionId },
+      const userWallet = await tx.wallet.findUnique({
+        where: { userId: session.userId },
+      });
+
+      if (!userWallet) {
+        throw new Error('User wallet not found');
+      }
+
+      const prevBalance = Number(userWallet.balance);
+      const newBalance = prevBalance - totalFee;
+      const isDebt = newBalance < 0;
+
+      let paymentStatus: PaymentStatus = PaymentStatus.PAID;
+      let debtDeadline: Date | null = userWallet.debtDeadline;
+      let debtCreatedAt: Date | null = userWallet.debtCreatedAt;
+
+      if (isDebt) {
+        paymentStatus = PaymentStatus.DEBT;
+        if (!debtCreatedAt) {
+          debtCreatedAt = exitTime;
+          debtDeadline = new Date(exitTime.getTime() + 48 * 60 * 60 * 1000); // +48 hours
+        }
+      }
+
+      // Update Wallet
+      const updatedWallet = await tx.wallet.update({
+        where: { id: userWallet.id },
         data: {
-          status: SessionStatus.COMPLETED,
-          exitTime: new Date(),
-          paymentStatus: PaymentStatus.PAID, // Marked settled by operator override
+          balance: newBalance,
+          debtCreatedAt,
+          debtDeadline,
         },
       });
 
+      // Update Parking Session to COMPLETED
+      const closed = await tx.parkingSession.update({
+        where: { id: sessionId },
+        data: {
+          exitTime,
+          durationMinutes,
+          totalFee,
+          status: SessionStatus.COMPLETED,
+          paymentStatus,
+        },
+      });
+
+      // Record Wallet Transaction
+      const transaction = await tx.walletTransaction.create({
+        data: {
+          walletId: userWallet.id,
+          sessionId: closed.id,
+          type: TransactionType.PARKING_CHARGE,
+          amount: totalFee,
+          description: `Force-closed by operator: Parking fee for ${session.vehicle.licensePlate} (${durationMinutes} mins)${resolutionNote ? ` - Note: ${resolutionNote}` : ''}`,
+        },
+      });
+
+      // Release Slot back to AVAILABLE
       const releasedSlot = await tx.parkingSlot.update({
         where: { id: session.slotId },
         data: {
@@ -235,8 +296,9 @@ operatorRouter.patch('/sessions/:id/resolve', async (req: Request, res: Response
         include: { level: true },
       });
 
-      return { closed, releasedSlot };
+      return { closed, releasedSlot, totalFee, paymentStatus, updatedWallet, transaction };
     });
+
 
     // Notify dashboard in real-time
     io.to(`facility:${session.facilityId}`).emit('session:resolved', {

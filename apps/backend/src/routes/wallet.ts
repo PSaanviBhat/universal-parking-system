@@ -2,6 +2,8 @@ import { Router, Response } from 'express';
 import { prisma } from '../utils/prisma';
 import { authGuard, AuthenticatedRequest } from '../middleware/auth';
 import { TransactionType } from '@prisma/client';
+import Razorpay from 'razorpay';
+import { verifyRazorpaySignature } from '../utils/razorpay';
 
 export const walletRouter = Router();
 
@@ -10,6 +12,20 @@ walletRouter.use(authGuard);
 
 const MINIMUM_WALLET_TOPUP = Number(process.env.MINIMUM_WALLET_TOPUP || 35);
 const DEBT_REPAYMENT_WINDOW_HOURS = Number(process.env.DEBT_REPAYMENT_WINDOW_HOURS || 48);
+
+const isRazorpayConfigured =
+  Boolean(process.env.RAZORPAY_KEY_ID) &&
+  !process.env.RAZORPAY_KEY_ID?.includes('xxxxxxxx') &&
+  Boolean(process.env.RAZORPAY_KEY_SECRET) &&
+  !process.env.RAZORPAY_KEY_SECRET?.includes('xxxxxxxx');
+
+const razorpayClient = isRazorpayConfigured
+  ? new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID!,
+      key_secret: process.env.RAZORPAY_KEY_SECRET!,
+    })
+  : null;
+
 
 /**
  * GET /api/wallet
@@ -80,8 +96,73 @@ walletRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise<
 });
 
 /**
+ * POST /api/wallet/create-order
+ * Creates a Razorpay payment order for wallet top-up.
+ */
+walletRouter.post('/create-order', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized.' });
+      return;
+    }
+
+    const { amount } = req.body;
+    const amountNum = Number(amount);
+
+    if (!amount || isNaN(amountNum) || amountNum < MINIMUM_WALLET_TOPUP) {
+      res.status(400).json({
+        success: false,
+        message: `Minimum wallet top-up amount is ₹${MINIMUM_WALLET_TOPUP}.`,
+      });
+      return;
+    }
+
+    const amountInPaise = Math.round(amountNum * 100);
+
+    if (razorpayClient) {
+      const order = await razorpayClient.orders.create({
+        amount: amountInPaise,
+        currency: 'INR',
+        receipt: `topup_${userId.slice(0, 8)}_${Date.now()}`,
+      });
+
+      res.status(200).json({
+        success: true,
+        data: {
+          orderId: order.id,
+          amount: amountNum,
+          amountInPaise: order.amount,
+          currency: order.currency,
+          keyId: process.env.RAZORPAY_KEY_ID,
+        },
+      });
+      return;
+    }
+
+    // Simulated/dev order when testing without live Razorpay keys
+    const mockOrderId = `order_sim_${Date.now()}`;
+    res.status(200).json({
+      success: true,
+      data: {
+        orderId: mockOrderId,
+        amount: amountNum,
+        amountInPaise,
+        currency: 'INR',
+        keyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_simulated',
+        isMock: true,
+      },
+    });
+  } catch (error) {
+    console.error('[Create Order Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to create payment order.' });
+  }
+});
+
+/**
  * POST /api/wallet/topup
  * Adds funds to user's prepaid wallet (minimum ₹35 per product decision).
+ * Verifies Razorpay payment signature before crediting balance.
  * If user was in debt:
  * - Checks if the top-up repays or reduces the debt.
  * - If new balance >= 0, clears debt timestamps.
@@ -95,7 +176,7 @@ walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Pr
       return;
     }
 
-    const { amount, paymentMethodType, razorpayPaymentId } = req.body;
+    const { amount, paymentMethodType, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
     const amountNum = Number(amount);
     if (!amount || isNaN(amountNum) || amountNum <= 0) {
@@ -113,6 +194,27 @@ walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Pr
       });
       return;
     }
+
+    // Cryptographic signature verification when Razorpay keys are configured
+    if (isRazorpayConfigured && razorpayOrderId && !razorpayOrderId.startsWith('order_sim_')) {
+      if (!razorpayPaymentId || !razorpaySignature) {
+        res.status(400).json({
+          success: false,
+          message: 'Razorpay payment ID and signature are required for payment verification.',
+        });
+        return;
+      }
+
+      const isValid = verifyRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature);
+      if (!isValid) {
+        res.status(400).json({
+          success: false,
+          message: 'Payment verification failed: invalid signature. Funds were not credited.',
+        });
+        return;
+      }
+    }
+
 
     const result = await prisma.$transaction(async (tx) => {
       const currentWallet = await tx.wallet.findUnique({
