@@ -5,6 +5,7 @@ import { Server } from 'socket.io';
 import dotenv from 'dotenv';
 
 import { healthRouter } from './routes/health';
+import { authRouter } from './routes/auth';
 
 dotenv.config();
 
@@ -39,9 +40,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use('/health', healthRouter);
-
-// Placeholder routes — will be wired in Phase 2 onwards
-app.use('/api/auth', (_req, res) => res.json({ message: 'Auth routes — Phase 2' }));
+app.use('/api/auth', authRouter);
 app.use('/api/vehicles', (_req, res) => res.json({ message: 'Vehicle routes — Phase 3' }));
 app.use('/api/wallet', (_req, res) => res.json({ message: 'Wallet routes — Phase 4' }));
 app.use('/api/sessions', (_req, res) => res.json({ message: 'Session routes — Phase 6/7' }));
@@ -63,10 +62,13 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '4000', 10);
 
-httpServer.listen(PORT, () => {
-  console.log(`\n🚗 Parking System Backend running on http://localhost:${PORT}`);
-  console.log(`📋 Health check: http://localhost:${PORT}/health`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}\n`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  httpServer.listen(PORT, () => {
+    console.log(`\n🚗 Parking System Backend running on http://localhost:${PORT}`);
+    console.log(`📋 Health check: http://localhost:${PORT}/health`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}\n`);
+  });
+}
 
+export { app, httpServer };
 export default app;
