@@ -159,9 +159,21 @@ walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Pr
       return { updatedWallet, transaction, prevBalance, newBalance, wasInDebt, isCleared };
     });
 
+    // If user was suspended and now cleared balance (>= 0), automatically reinstate
+    let reinstated = false;
+    if (result.isCleared) {
+      const user = await prisma.user.findUnique({ where: { id: userId }, select: { isSuspended: true } });
+      if (user?.isSuspended) {
+        const { reinstateSuspendedAccount } = await import('../services/debtWorker');
+        reinstated = await reinstateSuspendedAccount(userId);
+      }
+    }
+
     res.status(200).json({
       success: true,
-      message: result.wasInDebt && result.isCleared
+      message: reinstated
+        ? 'Dues fully cleared! Your account suspension has been lifted and vehicles un-blacklisted.'
+        : result.wasInDebt && result.isCleared
         ? 'Top-up successful! Your debt has been fully cleared.'
         : 'Top-up successful!',
       data: {
@@ -169,6 +181,7 @@ walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Pr
         previousBalance: result.prevBalance,
         newBalance: result.newBalance,
         isDebt: result.newBalance < 0,
+        isReinstated: reinstated,
         transaction: {
           id: result.transaction.id,
           type: result.transaction.type,
