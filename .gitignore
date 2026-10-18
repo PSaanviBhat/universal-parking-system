@@ -12,3 +12,4 @@ Thumbs.db
 .dart_tool/
 build/
 *.g.dart
+.npmrc
