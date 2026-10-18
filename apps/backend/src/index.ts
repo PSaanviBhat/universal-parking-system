@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
+import { vehicleRouter } from './routes/vehicles';
 
 dotenv.config();
 
@@ -41,7 +42,7 @@ app.use(express.urlencoded({ extended: true }));
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use('/health', healthRouter);
 app.use('/api/auth', authRouter);
-app.use('/api/vehicles', (_req, res) => res.json({ message: 'Vehicle routes — Phase 3' }));
+app.use('/api/vehicles', vehicleRouter);
 app.use('/api/wallet', (_req, res) => res.json({ message: 'Wallet routes — Phase 4' }));
 app.use('/api/sessions', (_req, res) => res.json({ message: 'Session routes — Phase 6/7' }));
 app.use('/api/operator', (_req, res) => res.json({ message: 'Operator routes — Phase 8' }));
