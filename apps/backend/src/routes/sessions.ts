@@ -343,3 +343,321 @@ sessionRouter.get('/active', async (req: AuthenticatedRequest, res: Response): P
     });
   }
 });
+
+/**
+ * POST /api/sessions/exit
+ * Concludes parking session via Exit QR Code scan.
+ *
+ * Core Business Rules & Guards Enforced:
+ * 1. Validates scanned QR payload as an active EXIT gate.
+ * 2. Identifies active parking session for the vehicle.
+ *    - Rejects if vehicle has no active session.
+ *    - Verifies vehicle belongs to facility where gate is located.
+ * 3. Prevents duplicate exits: Already completed sessions cannot be re-charged.
+ * 4. Duration & Fee Calculation:
+ *    - duration = exitTime - entryTime.
+ *    - fee = durationHours * feeRateSnapshot (min 1 hour or rounded proportionally).
+ * 5. Automatic Wallet Deduction & 48h Debt Handling:
+ *    - If wallet balance >= fee: Deducts full amount, paymentStatus = PAID.
+ *    - If wallet balance < fee: Wallet goes into negative DEBT (credit model).
+ *      - Sets `debtCreatedAt` = now.
+ *      - Sets `debtDeadline` = now + 48 hours.
+ *      - paymentStatus = DEBT.
+ *      - Session completes and slot is released (driver is not blocked at gate).
+ * 6. Slot & Session Release:
+ *    - Session status flips to COMPLETED.
+ *    - Slot status flips to AVAILABLE and `currentSessionId` cleared.
+ * 7. Real-Time WebSocket Broadcast:
+ *    - Emits `session:completed` and `slot:released` to operator dashboard.
+ */
+sessionRouter.post('/exit', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized.' });
+      return;
+    }
+
+    const { qrCodeData, vehicleId } = req.body;
+
+    if (!qrCodeData || !vehicleId) {
+      res.status(400).json({
+        success: false,
+        message: 'qrCodeData and vehicleId are required.',
+      });
+      return;
+    }
+
+    // 1. Parse and validate Exit QR Code
+    const parsedQr = parseGateQrPayload(qrCodeData);
+    if (!parsedQr || parsedQr.gateType !== 'EXIT') {
+      res.status(400).json({
+        success: false,
+        message: 'Invalid exit QR code. Please scan a valid facility exit gate QR.',
+      });
+      return;
+    }
+
+    const exitGate = await prisma.parkingGate.findUnique({
+      where: { id: parsedQr.gateId },
+      include: { facility: true },
+    });
+
+    if (!exitGate || !exitGate.isActive || exitGate.facilityId !== parsedQr.facilityId) {
+      res.status(404).json({
+        success: false,
+        message: 'Exit gate is inactive or does not exist.',
+      });
+      return;
+    }
+
+    // 2. Identify Active Session for the vehicle
+    const activeSession = await prisma.parkingSession.findFirst({
+      where: {
+        vehicleId,
+        userId,
+        status: SessionStatus.ACTIVE,
+      },
+      include: {
+        vehicle: true,
+        facility: true,
+        slot: { include: { level: true } },
+      },
+    });
+
+    if (!activeSession) {
+      res.status(404).json({
+        success: false,
+        message: 'No active parking session found for this vehicle. Cannot perform exit.',
+      });
+      return;
+    }
+
+    // Verify session belongs to the facility of this exit gate
+    if (activeSession.facilityId !== exitGate.facilityId) {
+      res.status(400).json({
+        success: false,
+        message: `Exit gate mismatch: Vehicle is parked at ${activeSession.facility.name}, but this exit gate belongs to ${exitGate.facility.name}.`,
+      });
+      return;
+    }
+
+    const exitTime = new Date();
+    const entryTime = new Date(activeSession.entryTime);
+    const durationMs = exitTime.getTime() - entryTime.getTime();
+    const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
+    const durationHours = durationMinutes / 60;
+    const hourlyRate = Number(activeSession.feeRateSnapshot);
+
+    // Calculate fee: at least 1-hour minimum charge or calculated duration
+    const totalFee = Math.max(hourlyRate, Math.round(durationHours * hourlyRate * 100) / 100);
+
+    // 3 & 4. Atomic Transaction: Settle Payment from Wallet, Update Session, and Free Slot
+    const result = await prisma.$transaction(async (tx) => {
+      const userWallet = await tx.wallet.findUnique({
+        where: { userId },
+      });
+
+      if (!userWallet) {
+        throw new Error('User wallet not found');
+      }
+
+      const prevBalance = Number(userWallet.balance);
+      const newBalance = prevBalance - totalFee;
+      const isDebt = newBalance < 0;
+
+      let paymentStatus: PaymentStatus = PaymentStatus.PAID;
+      let debtDeadline: Date | null = userWallet.debtDeadline;
+      let debtCreatedAt: Date | null = userWallet.debtCreatedAt;
+
+      if (isDebt) {
+        paymentStatus = PaymentStatus.DEBT;
+        if (!debtCreatedAt) {
+          debtCreatedAt = exitTime;
+          debtDeadline = new Date(exitTime.getTime() + 48 * 60 * 60 * 1000); // +48 hours
+        }
+      }
+
+      // Update Wallet
+      const updatedWallet = await tx.wallet.update({
+        where: { id: userWallet.id },
+        data: {
+          balance: newBalance,
+          debtCreatedAt,
+          debtDeadline,
+        },
+      });
+
+      // Update Parking Session to COMPLETED
+      const closedSession = await tx.parkingSession.update({
+        where: { id: activeSession.id },
+        data: {
+          exitGateId: exitGate.id,
+          exitTime,
+          durationMinutes,
+          totalFee,
+          status: SessionStatus.COMPLETED,
+          paymentStatus,
+        },
+      });
+
+      // Record Wallet Transaction
+      const transaction = await tx.walletTransaction.create({
+        data: {
+          walletId: userWallet.id,
+          sessionId: closedSession.id,
+          type: 'PARKING_CHARGE',
+          amount: totalFee,
+          description: `Parking fee for ${activeSession.vehicle.licensePlate} at ${activeSession.facility.name} (${durationMinutes} mins)`,
+        },
+      });
+
+      // Release Slot back to AVAILABLE
+      const releasedSlot = await tx.parkingSlot.update({
+        where: { id: activeSession.slotId },
+        data: {
+          status: SlotStatus.AVAILABLE,
+          currentSessionId: null,
+        },
+        include: { level: true },
+      });
+
+      return {
+        closedSession,
+        updatedWallet,
+        releasedSlot,
+        transaction,
+        isDebt,
+        prevBalance,
+        newBalance,
+        debtDeadline,
+      };
+    });
+
+    // 5. Broadcast real-time events via Socket.io
+    io.to(`facility:${exitGate.facilityId}`).emit('session:completed', {
+      sessionId: result.closedSession.id,
+      licensePlate: activeSession.vehicle.licensePlate,
+      facilityId: exitGate.facilityId,
+      exitGateName: exitGate.gateName,
+      exitTime,
+      durationMinutes,
+      totalFee,
+      paymentStatus: result.closedSession.paymentStatus,
+      isDebt: result.isDebt,
+    });
+
+    io.to(`facility:${exitGate.facilityId}`).emit('slot:released', {
+      slotId: result.releasedSlot.id,
+      slotNumber: result.releasedSlot.slotNumber,
+      levelCode: result.releasedSlot.level.levelCode,
+      status: result.releasedSlot.status,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: result.isDebt
+        ? 'Exit cleared! Your wallet has insufficient balance and entered debt. Please repay within 48 hours to avoid autopay/suspension.'
+        : 'Exit cleared! Parking fee successfully deducted from your wallet.',
+      data: {
+        session: {
+          id: result.closedSession.id,
+          licensePlate: activeSession.vehicle.licensePlate,
+          facilityName: activeSession.facility.name,
+          slotNumber: activeSession.slot.slotNumber,
+          levelName: activeSession.slot.level.displayName,
+          entryTime: activeSession.entryTime,
+          exitTime,
+          durationMinutes,
+          totalFee,
+          status: result.closedSession.status,
+          paymentStatus: result.closedSession.paymentStatus,
+        },
+        wallet: {
+          previousBalance: result.prevBalance,
+          amountDeducted: totalFee,
+          remainingBalance: result.newBalance,
+          isDebt: result.isDebt,
+          debtAmount: result.isDebt ? Math.abs(result.newBalance) : 0,
+          debtDeadline: result.debtDeadline,
+        },
+        exitGateName: exitGate.gateName,
+      },
+    });
+  } catch (error) {
+    console.error('[Session Exit Error]', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process parking exit.',
+    });
+  }
+});
+
+/**
+ * GET /api/sessions/history
+ * Returns user's past completed parking sessions with receipts.
+ */
+sessionRouter.get('/history', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized.' });
+      return;
+    }
+
+    const page = Math.max(1, parseInt(String(req.query.page || 1), 10));
+    const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || 20), 10)));
+    const skip = (page - 1) * limit;
+
+    const [total, sessions] = await Promise.all([
+      prisma.parkingSession.count({ where: { userId, status: SessionStatus.COMPLETED } }),
+      prisma.parkingSession.findMany({
+        where: { userId, status: SessionStatus.COMPLETED },
+        orderBy: { exitTime: 'desc' },
+        skip,
+        take: limit,
+        include: {
+          vehicle: { select: { licensePlate: true, nickname: true } },
+          facility: { select: { name: true, address: true } },
+          slot: { select: { slotNumber: true, level: { select: { displayName: true } } } },
+          entryGate: { select: { gateName: true } },
+          exitGate: { select: { gateName: true } },
+        },
+      }),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        sessions: sessions.map((s) => ({
+          sessionId: s.id,
+          licensePlate: s.vehicle.licensePlate,
+          vehicleNickname: s.vehicle.nickname,
+          facilityName: s.facility.name,
+          facilityAddress: s.facility.address,
+          slotNumber: s.slot.slotNumber,
+          levelName: s.slot.level.displayName,
+          entryGate: s.entryGate.gateName,
+          exitGate: s.exitGate?.gateName || null,
+          entryTime: s.entryTime,
+          exitTime: s.exitTime,
+          durationMinutes: s.durationMinutes,
+          totalFee: Number(s.totalFee || 0),
+          paymentStatus: s.paymentStatus,
+          status: s.status,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('[Get Session History Error]', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve session history.',
+    });
+  }
+});
+
