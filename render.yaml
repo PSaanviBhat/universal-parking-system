@@ -19,8 +19,16 @@ services:
         sync: false # Set via Render dashboard using your Neon PostgreSQL URL
       - key: JWT_SECRET
         generateValue: true
+      - key: OPERATOR_JWT_SECRET
+        generateValue: true
+      - key: ADMIN_JWT_SECRET
+        generateValue: true
       - key: JWT_EXPIRES_IN
         value: 7d
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
       - key: DASHBOARD_URL
         sync: false # Set to your deployed Vercel dashboard URL
       - key: DEFAULT_FEE_RATE_PER_HOUR
