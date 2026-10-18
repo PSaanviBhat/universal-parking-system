@@ -8,6 +8,7 @@ import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import { vehicleRouter } from './routes/vehicles';
 import { walletRouter } from './routes/wallet';
+import { adminRouter } from './routes/admin';
 
 dotenv.config();
 
@@ -45,9 +46,9 @@ app.use('/health', healthRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/vehicles', vehicleRouter);
 app.use('/api/wallet', walletRouter);
+app.use('/api/admin', adminRouter);
 app.use('/api/sessions', (_req, res) => res.json({ message: 'Session routes — Phase 6/7' }));
 app.use('/api/operator', (_req, res) => res.json({ message: 'Operator routes — Phase 8' }));
-app.use('/api/admin', (_req, res) => res.json({ message: 'Admin routes — Phase 5' }));
 
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 app.use((_req: Request, res: Response) => {
