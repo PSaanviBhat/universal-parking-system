@@ -1,9 +1,9 @@
 import { Router, Response } from 'express';
 import { prisma } from '../utils/prisma';
 import { authGuard, AuthenticatedRequest } from '../middleware/auth';
-import { TransactionType } from '@prisma/client';
-import Razorpay from 'razorpay';
-import { verifyRazorpaySignature } from '../utils/razorpay';
+import { PaymentOrderStatus, Prisma } from '@prisma/client';
+import { razorpayClient, simulatedPaymentsAllowed, verifyRazorpaySignature } from '../utils/razorpay';
+import { creditWallet } from '../services/billing';
 
 export const walletRouter = Router();
 
@@ -11,21 +11,8 @@ export const walletRouter = Router();
 walletRouter.use(authGuard);
 
 const MINIMUM_WALLET_TOPUP = Number(process.env.MINIMUM_WALLET_TOPUP || 35);
+const MAXIMUM_WALLET_TOPUP = Number(process.env.MAXIMUM_WALLET_TOPUP || 10000);
 const DEBT_REPAYMENT_WINDOW_HOURS = Number(process.env.DEBT_REPAYMENT_WINDOW_HOURS || 48);
-
-const isRazorpayConfigured =
-  Boolean(process.env.RAZORPAY_KEY_ID) &&
-  !process.env.RAZORPAY_KEY_ID?.includes('xxxxxxxx') &&
-  Boolean(process.env.RAZORPAY_KEY_SECRET) &&
-  !process.env.RAZORPAY_KEY_SECRET?.includes('xxxxxxxx');
-
-const razorpayClient = isRazorpayConfigured
-  ? new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID!,
-      key_secret: process.env.RAZORPAY_KEY_SECRET!,
-    })
-  : null;
-
 
 /**
  * GET /api/wallet
@@ -97,7 +84,10 @@ walletRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise<
 
 /**
  * POST /api/wallet/create-order
- * Creates a Razorpay payment order for wallet top-up.
+ * Creates a Razorpay order for a wallet top-up and records it as a PaymentOrder.
+ * The top-up endpoint only credits wallets against orders created here.
+ * Without Razorpay keys, a simulated order is issued only in local dev
+ * (ALLOW_SIMULATED_PAYMENTS=true and NODE_ENV != production).
  */
 walletRouter.post('/create-order', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
@@ -107,13 +97,18 @@ walletRouter.post('/create-order', async (req: AuthenticatedRequest, res: Respon
       return;
     }
 
-    const { amount } = req.body;
-    const amountNum = Number(amount);
-
-    if (!amount || isNaN(amountNum) || amountNum < MINIMUM_WALLET_TOPUP) {
+    const amountNum = Number(req.body.amount);
+    if (!Number.isFinite(amountNum) || amountNum < MINIMUM_WALLET_TOPUP) {
       res.status(400).json({
         success: false,
         message: `Minimum wallet top-up amount is ₹${MINIMUM_WALLET_TOPUP}.`,
+      });
+      return;
+    }
+    if (amountNum > MAXIMUM_WALLET_TOPUP) {
+      res.status(400).json({
+        success: false,
+        message: `Maximum wallet top-up amount is ₹${MAXIMUM_WALLET_TOPUP}.`,
       });
       return;
     }
@@ -127,29 +122,45 @@ walletRouter.post('/create-order', async (req: AuthenticatedRequest, res: Respon
         receipt: `topup_${userId.slice(0, 8)}_${Date.now()}`,
       });
 
+      await prisma.paymentOrder.create({
+        data: { userId, razorpayOrderId: order.id, amountPaise: amountInPaise, isSimulated: false },
+      });
+
       res.status(200).json({
         success: true,
         data: {
           orderId: order.id,
-          amount: amountNum,
-          amountInPaise: order.amount,
-          currency: order.currency,
+          amount: amountInPaise / 100,
+          amountInPaise,
+          currency: 'INR',
           keyId: process.env.RAZORPAY_KEY_ID,
+          isMock: false,
         },
       });
       return;
     }
 
-    // Simulated/dev order when testing without live Razorpay keys
-    const mockOrderId = `order_sim_${Date.now()}`;
+    if (!simulatedPaymentsAllowed) {
+      res.status(503).json({
+        success: false,
+        message: 'Online payments are not available right now. Please try again later.',
+      });
+      return;
+    }
+
+    const mockOrderId = `order_sim_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await prisma.paymentOrder.create({
+      data: { userId, razorpayOrderId: mockOrderId, amountPaise: amountInPaise, isSimulated: true },
+    });
+
     res.status(200).json({
       success: true,
       data: {
         orderId: mockOrderId,
-        amount: amountNum,
+        amount: amountInPaise / 100,
         amountInPaise,
         currency: 'INR',
-        keyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_simulated',
+        keyId: 'rzp_test_simulated',
         isMock: true,
       },
     });
@@ -161,12 +172,15 @@ walletRouter.post('/create-order', async (req: AuthenticatedRequest, res: Respon
 
 /**
  * POST /api/wallet/topup
- * Adds funds to user's prepaid wallet (minimum ₹35 per product decision).
- * Verifies Razorpay payment signature before crediting balance.
- * If user was in debt:
- * - Checks if the top-up repays or reduces the debt.
- * - If new balance >= 0, clears debt timestamps.
- * Records transaction with proper type (TOP_UP or DEBT_REPAYMENT).
+ * Credits the wallet for a paid order created by /create-order.
+ *
+ * - The order must belong to the caller and still be CREATED.
+ * - Real orders: the Razorpay signature is verified, and the payment is fetched
+ *   from Razorpay to confirm it belongs to this order, has the same amount and is captured.
+ * - The credited amount always comes from the stored order, never the request body.
+ * - The CREATED -> PAID flip is conditional, so a replayed request cannot credit twice.
+ * - If the user was in debt, the credit repays it; a suspended user whose
+ *   balance is back to >= 0 is reinstated.
  */
 walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
@@ -176,27 +190,42 @@ walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Pr
       return;
     }
 
-    const { amount, paymentMethodType, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+    const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
-    const amountNum = Number(amount);
-    if (!amount || isNaN(amountNum) || amountNum <= 0) {
+    if (!razorpayOrderId) {
       res.status(400).json({
         success: false,
-        message: 'A valid positive amount is required for wallet top-up.',
+        message: 'razorpayOrderId is required. Create an order with /api/wallet/create-order first.',
       });
       return;
     }
 
-    if (amountNum < MINIMUM_WALLET_TOPUP) {
-      res.status(400).json({
+    const order = await prisma.paymentOrder.findUnique({
+      where: { razorpayOrderId: String(razorpayOrderId) },
+    });
+
+    if (!order || order.userId !== userId) {
+      res.status(404).json({ success: false, message: 'Payment order not found.' });
+      return;
+    }
+
+    if (order.status !== PaymentOrderStatus.CREATED) {
+      res.status(409).json({
         success: false,
-        message: `Minimum wallet top-up amount is ₹${MINIMUM_WALLET_TOPUP}.`,
+        message: 'This payment has already been processed. Funds were not credited again.',
       });
       return;
     }
 
-    // Cryptographic signature verification when Razorpay keys are configured
-    if (isRazorpayConfigured && razorpayOrderId && !razorpayOrderId.startsWith('order_sim_')) {
+    let paymentId: string;
+
+    if (order.isSimulated) {
+      if (!simulatedPaymentsAllowed) {
+        res.status(403).json({ success: false, message: 'Simulated payments are disabled.' });
+        return;
+      }
+      paymentId = `pay_sim_${order.id}`;
+    } else {
       if (!razorpayPaymentId || !razorpaySignature) {
         res.status(400).json({
           success: false,
@@ -204,61 +233,61 @@ walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Pr
         });
         return;
       }
+      if (!razorpayClient) {
+        res.status(503).json({ success: false, message: 'Payment verification is unavailable.' });
+        return;
+      }
 
-      const isValid = verifyRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature);
-      if (!isValid) {
+      if (!verifyRazorpaySignature(order.razorpayOrderId, String(razorpayPaymentId), String(razorpaySignature))) {
         res.status(400).json({
           success: false,
           message: 'Payment verification failed: invalid signature. Funds were not credited.',
         });
         return;
       }
+
+      let payment = await razorpayClient.payments.fetch(String(razorpayPaymentId));
+      if (payment.order_id !== order.razorpayOrderId || payment.amount !== order.amountPaise) {
+        res.status(400).json({
+          success: false,
+          message: 'Payment does not match this order. Funds were not credited.',
+        });
+        return;
+      }
+      if (payment.status === 'authorized') {
+        payment = await razorpayClient.payments.capture(payment.id, order.amountPaise, 'INR');
+      }
+      if (payment.status !== 'captured') {
+        res.status(402).json({
+          success: false,
+          message: `Payment not completed (status: ${payment.status}). Funds were not credited.`,
+        });
+        return;
+      }
+      paymentId = payment.id;
     }
 
+    const amountNum = order.amountPaise / 100;
 
     const result = await prisma.$transaction(async (tx) => {
-      const currentWallet = await tx.wallet.findUnique({
-        where: { userId },
+      const marked = await tx.paymentOrder.updateMany({
+        where: { id: order.id, status: PaymentOrderStatus.CREATED },
+        data: { status: PaymentOrderStatus.PAID, razorpayPaymentId: paymentId, paidAt: new Date() },
       });
+      if (marked.count === 0) {
+        throw new Error('ORDER_ALREADY_PROCESSED');
+      }
 
-      if (!currentWallet) {
+      const wallet = await tx.wallet.findUnique({ where: { userId }, select: { id: true } });
+      if (!wallet) {
         throw new Error('Wallet not found');
       }
 
-      const prevBalance = Number(currentWallet.balance);
-      const newBalance = prevBalance + amountNum;
-      const wasInDebt = prevBalance < 0;
-      const isCleared = newBalance >= 0;
-
-      // Determine transaction type and description
-      const txType = wasInDebt ? TransactionType.DEBT_REPAYMENT : TransactionType.TOP_UP;
-      const description = wasInDebt
-        ? `Debt repayment / Top-up: ₹${amountNum.toFixed(2)}`
-        : `Wallet top-up: ₹${amountNum.toFixed(2)}`;
-
-      // Update wallet balance and conditionally clear debt dates if cleared
-      const updatedWallet = await tx.wallet.update({
-        where: { id: currentWallet.id },
-        data: {
-          balance: newBalance,
-          debtCreatedAt: isCleared ? null : currentWallet.debtCreatedAt,
-          debtDeadline: isCleared ? null : currentWallet.debtDeadline,
-        },
+      return creditWallet(tx, {
+        walletId: wallet.id,
+        amount: amountNum,
+        description: `Wallet top-up: ₹${amountNum.toFixed(2)} (Txn: ${paymentId})`,
       });
-
-      // Record transaction
-      const transaction = await tx.walletTransaction.create({
-        data: {
-          walletId: currentWallet.id,
-          type: txType,
-          amount: amountNum,
-          description: razorpayPaymentId
-            ? `${description} (Txn: ${razorpayPaymentId})`
-            : description,
-        },
-      });
-
-      return { updatedWallet, transaction, prevBalance, newBalance, wasInDebt, isCleared };
     });
 
     // If user was suspended and now cleared balance (>= 0), automatically reinstate
@@ -279,7 +308,8 @@ walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Pr
         ? 'Top-up successful! Your debt has been fully cleared.'
         : 'Top-up successful!',
       data: {
-        walletId: result.updatedWallet.id,
+        walletId: result.wallet.id,
+        amountCredited: amountNum,
         previousBalance: result.prevBalance,
         newBalance: result.newBalance,
         isDebt: result.newBalance < 0,
@@ -294,6 +324,16 @@ walletRouter.post('/topup', async (req: AuthenticatedRequest, res: Response): Pr
       },
     });
   } catch (error) {
+    if (
+      (error instanceof Error && error.message === 'ORDER_ALREADY_PROCESSED') ||
+      (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
+    ) {
+      res.status(409).json({
+        success: false,
+        message: 'This payment has already been processed. Funds were not credited again.',
+      });
+      return;
+    }
     console.error('[Top-up Error]', error);
     res.status(500).json({ success: false, message: 'Failed to process wallet top-up.' });
   }

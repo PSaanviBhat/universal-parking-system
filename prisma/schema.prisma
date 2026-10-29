@@ -29,6 +29,7 @@ model User {
   paymentMethods    PaymentMethod[]
   parkingSessions   ParkingSession[]
   suspensionRecords SuspensionRecord[]
+  paymentOrders     PaymentOrder[]
 }
 
 // ─── VEHICLES ─────────────────────────────────────────────────────────────────
@@ -82,6 +83,32 @@ enum TransactionType {
   DEBT_REPAYMENT
   AUTOPAY
   FINE
+}
+
+// ─── PAYMENT ORDERS (wallet top-ups) ──────────────────────────────────────────
+// Every top-up must reference an order created by POST /api/wallet/create-order.
+// The credited amount comes from the order, and the CREATED -> PAID transition
+// happens exactly once, which blocks replayed or tampered top-up requests.
+model PaymentOrder {
+  id                String             @id @default(uuid())
+  userId            String
+  razorpayOrderId   String             @unique
+  amountPaise       Int
+  status            PaymentOrderStatus @default(CREATED)
+  razorpayPaymentId String?            @unique
+  isSimulated       Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+  paidAt            DateTime?
+
+  user              User               @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+enum PaymentOrderStatus {
+  CREATED
+  PAID
+  FAILED
 }
 
 // ─── PAYMENT METHODS ──────────────────────────────────────────────────────────

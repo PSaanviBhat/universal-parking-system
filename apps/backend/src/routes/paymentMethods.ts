@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { prisma } from '../utils/prisma';
 import { authGuard, AuthenticatedRequest } from '../middleware/auth';
+import { simulatedPaymentsAllowed } from '../utils/razorpay';
 
 export const paymentMethodsRouter = Router();
 
@@ -66,6 +67,14 @@ paymentMethodsRouter.post('/', async (req: AuthenticatedRequest, res: Response):
       res.status(400).json({
         success: false,
         message: 'Invalid payment method type. Allowed types are: UPI, CARD, NETBANKING.',
+      });
+      return;
+    }
+
+    if (!razorpayToken && !simulatedPaymentsAllowed) {
+      res.status(400).json({
+        success: false,
+        message: 'razorpayToken is required to save a payment method.',
       });
       return;
     }

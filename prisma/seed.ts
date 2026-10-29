@@ -28,6 +28,8 @@ async function main() {
   await prisma.parkingFacility.deleteMany();
   await prisma.suspensionRecord.deleteMany();
   await prisma.wallet.deleteMany();
+  await prisma.paymentMethod.deleteMany();
+  await prisma.paymentOrder.deleteMany();
   await prisma.vehicle.deleteMany();
   await prisma.user.deleteMany();
   console.log('✅ Clean complete.\n');

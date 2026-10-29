@@ -25,11 +25,27 @@ declare module 'razorpay' {
     created_at: number;
   }
 
+  interface RazorpayPayment {
+    id: string;
+    entity: string;
+    amount: number;
+    currency: string;
+    status: 'created' | 'authorized' | 'captured' | 'refunded' | 'failed';
+    order_id: string | null;
+    method: string;
+    captured: boolean;
+    created_at: number;
+  }
+
   class Razorpay {
     constructor(options: RazorpayOptions);
     orders: {
       create(args: OrderCreateArgs): Promise<RazorpayOrder>;
       fetch(orderId: string): Promise<RazorpayOrder>;
+    };
+    payments: {
+      fetch(paymentId: string): Promise<RazorpayPayment>;
+      capture(paymentId: string, amount: number, currency: string): Promise<RazorpayPayment>;
     };
   }
 
