@@ -2,11 +2,13 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import 'auth_service.dart';
+import '../models/session_view.dart';
 
 class SessionService {
-  static Future<Map<String, dynamic>?> getActiveSession() async {
+  /// All ACTIVE sessions for the user (one per parked vehicle).
+  static Future<List<SessionView>> getActiveSessions() async {
     final token = await AuthService.getToken();
-    if (token == null) return null;
+    if (token == null) return [];
 
     final res = await http.get(
       Uri.parse('${ApiConfig.baseUrl}/api/sessions/active'),
@@ -15,11 +17,20 @@ class SessionService {
 
     if (res.statusCode == 200) {
       final json = jsonDecode(res.body);
-      if (json['success'] == true) {
-        return json['data'];
+      if (json['success'] == true && json['data'] is List) {
+        return (json['data'] as List)
+            .whereType<Map>()
+            .map((s) => SessionView(Map<String, dynamic>.from(s)))
+            .toList();
       }
     }
-    return null;
+    return [];
+  }
+
+  /// The most recent ACTIVE session, or null when no vehicle is parked.
+  static Future<SessionView?> getActiveSession() async {
+    final sessions = await getActiveSessions();
+    return sessions.isEmpty ? null : sessions.first;
   }
 
   static Future<Map<String, dynamic>?> getSessionById(String id) async {
@@ -40,7 +51,7 @@ class SessionService {
     return null;
   }
 
-  static Future<Map<String, dynamic>> enterParking({
+  static Future<SessionView> enterParking({
     required String qrCodeData,
     required String vehicleId,
   }) async {
@@ -63,7 +74,7 @@ class SessionService {
     if (res.statusCode != 201 || data['success'] != true) {
       throw data['message'] ?? 'Failed to initiate parking session.';
     }
-    return data['data'];
+    return SessionView(Map<String, dynamic>.from(data['data']));
   }
 
   static Future<Map<String, dynamic>> exitParking({

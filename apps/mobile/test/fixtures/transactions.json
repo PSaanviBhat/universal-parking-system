@@ -1,0 +1,21 @@
+{
+  "success": true,
+  "data": {
+    "total": 1,
+    "page": 1,
+    "limit": 20,
+    "totalPages": 1,
+    "transactions": [
+      {
+        "id": "2143eae0-a910-4f54-8ac1-1249bc880855",
+        "type": "PARKING_CHARGE",
+        "amount": 30,
+        "description": "Parking fee for KA03FX3338 at Phoenix Mall (1 mins)",
+        "sessionId": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+        "facilityName": "Phoenix Mall",
+        "slotNumber": "G-05",
+        "createdAt": "2026-10-29T19:01:19.374Z"
+      }
+    ]
+  }
+}

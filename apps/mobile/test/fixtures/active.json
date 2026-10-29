@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "hasActiveSession": true,
+  "data": [
+    {
+      "sessionId": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+      "vehicle": {
+        "id": "6ccdc000-2a05-47e9-b5bd-6da0856d8097",
+        "licensePlate": "KA03FX3338",
+        "nickname": "Fixture"
+      },
+      "facility": {
+        "id": "9bfb9a6b-fe53-43d6-90dc-2bac68aeae61",
+        "name": "Phoenix Mall",
+        "address": "123 Main Street, City Center"
+      },
+      "entryTime": "2026-10-29T19:01:15.857Z",
+      "durationMinutes": 1,
+      "hourlyRate": 30,
+      "estimatedFee": 30,
+      "status": "ACTIVE",
+      "assignedSlot": {
+        "slotId": "21093e1e-f792-424f-8ec8-72b7c23f198f",
+        "slotNumber": "G-04",
+        "levelCode": "G",
+        "levelName": "Ground Floor",
+        "floorMapUrl": null,
+        "coordinateX": 70,
+        "coordinateY": 25,
+        "directions": "Proceed to Ground Floor, Slot G-04."
+      },
+      "entryGateName": "North Entry Gate"
+    }
+  ]
+}

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/session_service.dart';
 import '../services/vehicle_service.dart';
+import '../services/wallet_service.dart';
+import '../services/facility_service.dart';
 import 'slot_assigned_screen.dart';
 import 'exit_summary_screen.dart';
 
@@ -42,11 +44,44 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
       }
 
       final gateType = parts[3];
+      final facilityId = parts[2];
+      final isEntry = gateType == 'ENTRY';
 
-      // Fetch user's registered vehicles
-      final vehicles = await VehicleService.getVehicles();
+      // Fetch user's registered vehicles (with their parking state) and, for entry,
+      // the wallet balance and this facility's hourly rate for an up-front warning.
+      final results = await Future.wait<dynamic>([
+        VehicleService.getVehicles(),
+        if (isEntry) WalletService.getWalletInfo(),
+        if (isEntry) FacilityService.getFacility(facilityId),
+      ]);
+      final vehicles = results[0] as List<dynamic>;
       if (vehicles.isEmpty) {
         throw 'No registered vehicles found. Please add your vehicle under "My Vehicles" before entering.';
+      }
+
+      // A parked vehicle can't enter again; only a parked vehicle can exit.
+      final eligible = vehicles.where((v) => (v['parkingState'] == 'PARKED') != isEntry).toList();
+      if (eligible.isEmpty) {
+        throw isEntry
+            ? 'All your vehicles are already inside a parking facility. Exit first before entering again.'
+            : 'None of your vehicles has an active parking session, so there is nothing to exit.';
+      }
+
+      String? balanceWarning;
+      if (isEntry) {
+        final wallet = results[1] as Map<String, dynamic>?;
+        final facility = results[2] as Map<String, dynamic>?;
+        final balance = (wallet?['balance'] as num?)?.toDouble();
+        final rate = (facility?['feeRatePerHour'] as num?)?.toDouble();
+        if (wallet?['isSuspended'] == true) {
+          throw 'Your account is suspended due to unpaid dues. Top up your wallet to clear them before parking.';
+        }
+        if (balance != null && rate != null && balance < rate) {
+          balanceWarning = balance < 0
+              ? 'You owe ₹${balance.abs().toStringAsFixed(2)}. You can still park, but please top up soon.'
+              : 'Your balance (₹${balance.toStringAsFixed(2)}) is below the 1-hour minimum of ₹${rate.toStringAsFixed(0)} here. '
+                  'You can still park; top up before you exit to avoid going into debt.';
+        }
       }
 
       if (!mounted) return;
@@ -62,6 +97,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
         builder: (ctx) => _VehicleSelectorSheet(
           vehicles: vehicles,
           gateType: gateType,
+          balanceWarning: balanceWarning,
         ),
       );
 
@@ -74,7 +110,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
 
       if (gateType == 'ENTRY') {
         // Enter parking
-        final sessionData = await SessionService.enterParking(
+        final session = await SessionService.enterParking(
           qrCodeData: rawValue,
           vehicleId: vehicleId,
         );
@@ -83,7 +119,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (_) => SlotAssignedScreen(session: sessionData),
+            builder: (_) => SlotAssignedScreen(session: session),
           ),
         );
       } else {
@@ -199,8 +235,9 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
 class _VehicleSelectorSheet extends StatefulWidget {
   final List<dynamic> vehicles;
   final String gateType;
+  final String? balanceWarning;
 
-  const _VehicleSelectorSheet({required this.vehicles, required this.gateType});
+  const _VehicleSelectorSheet({required this.vehicles, required this.gateType, this.balanceWarning});
 
   @override
   State<_VehicleSelectorSheet> createState() => _VehicleSelectorSheetState();
@@ -209,11 +246,14 @@ class _VehicleSelectorSheet extends StatefulWidget {
 class _VehicleSelectorSheetState extends State<_VehicleSelectorSheet> {
   String? _selectedId;
 
+  bool _isEligible(dynamic v) => (v['parkingState'] == 'PARKED') != (widget.gateType == 'ENTRY');
+
   @override
   void initState() {
     super.initState();
-    if (widget.vehicles.isNotEmpty) {
-      _selectedId = widget.vehicles.first['id'];
+    final firstEligible = widget.vehicles.where(_isEligible);
+    if (firstEligible.isNotEmpty) {
+      _selectedId = firstEligible.first['id'];
     }
   }
 
@@ -235,12 +275,39 @@ class _VehicleSelectorSheetState extends State<_VehicleSelectorSheet> {
               IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
             ],
           ),
+          if (widget.balanceWarning != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBEB),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFCD34D)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.account_balance_wallet_outlined, color: Color(0xFFB45309), size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      widget.balanceWarning!,
+                      style: const TextStyle(color: Color(0xFF92400E), fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 16),
           ...widget.vehicles.map((v) {
             final isSelected = _selectedId == v['id'];
+            final eligible = _isEligible(v);
             return GestureDetector(
-              onTap: () => setState(() => _selectedId = v['id']),
-              child: Container(
+              onTap: eligible ? () => setState(() => _selectedId = v['id']) : null,
+              child: Opacity(
+                opacity: eligible ? 1 : 0.45,
+                child: Container(
                 margin: const EdgeInsets.only(bottom: 10),
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -271,6 +338,11 @@ class _VehicleSelectorSheetState extends State<_VehicleSelectorSheet> {
                               v['nickname'],
                               style: const TextStyle(color: Colors.black54, fontSize: 12),
                             ),
+                          if (!eligible)
+                            Text(
+                              widget.gateType == 'ENTRY' ? 'Already inside a facility' : 'Not parked',
+                              style: const TextStyle(color: Colors.black54, fontSize: 11, fontStyle: FontStyle.italic),
+                            ),
                         ],
                       ),
                     ),
@@ -278,6 +350,7 @@ class _VehicleSelectorSheetState extends State<_VehicleSelectorSheet> {
                       const Icon(Icons.check_circle_rounded, color: Color(0xFF2563EB)),
                   ],
                 ),
+              ),
               ),
             );
           }),

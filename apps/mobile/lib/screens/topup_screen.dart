@@ -1,4 +1,10 @@
+import 'dart:async';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
+import '../providers/auth_provider.dart';
 import '../services/wallet_service.dart';
 
 class TopUpScreen extends StatefulWidget {
@@ -14,12 +20,47 @@ class _TopUpScreenState extends State<TopUpScreen> {
   bool _isLoading = false;
   String? _errorMessage;
 
+  static const double _minimumTopUp = 35;
   final List<double> _presetAmounts = [35, 50, 100, 250, 500];
+
+  Razorpay? _razorpay;
+  Completer<PaymentSuccessResponse>? _pendingPayment;
+
+  bool get _checkoutSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
+  @override
+  void initState() {
+    super.initState();
+    if (_checkoutSupported) {
+      _razorpay = Razorpay()
+        ..on(Razorpay.EVENT_PAYMENT_SUCCESS, _onPaymentSuccess)
+        ..on(Razorpay.EVENT_PAYMENT_ERROR, _onPaymentError)
+        ..on(Razorpay.EVENT_EXTERNAL_WALLET, _onExternalWallet);
+    }
+  }
 
   @override
   void dispose() {
+    _razorpay?.clear();
     _amountController.dispose();
     super.dispose();
+  }
+
+  void _onPaymentSuccess(PaymentSuccessResponse response) {
+    _pendingPayment?.complete(response);
+  }
+
+  void _onPaymentError(PaymentFailureResponse response) {
+    final cancelled = response.code == Razorpay.PAYMENT_CANCELLED;
+    _pendingPayment?.completeError(
+      cancelled ? 'Payment cancelled. No money was taken.' : 'Payment failed: ${response.message ?? 'unknown error'}. No money was added.',
+    );
+  }
+
+  void _onExternalWallet(ExternalWalletResponse response) {
+    _pendingPayment?.completeError(
+      '${response.walletName ?? 'External wallet'} payments are not supported. Please use UPI, card or netbanking.',
+    );
   }
 
   void _onPresetSelected(double val) {
@@ -30,10 +71,30 @@ class _TopUpScreenState extends State<TopUpScreen> {
     });
   }
 
+  /// Opens Razorpay Checkout for the order and waits for its result.
+  Future<PaymentSuccessResponse> _collectPayment(Map<String, dynamic> order) {
+    final user = Provider.of<AuthProvider>(context, listen: false).user;
+    _pendingPayment = Completer<PaymentSuccessResponse>();
+    _razorpay!.open({
+      'key': order['keyId'],
+      'order_id': order['orderId'],
+      'amount': order['amountInPaise'],
+      'currency': order['currency'] ?? 'INR',
+      'name': 'Universal Smart Parking',
+      'description': 'Parking wallet top-up',
+      'prefill': {
+        if (user?['email'] != null) 'email': user!['email'],
+        if (user?['phone'] != null) 'contact': user!['phone'],
+      },
+      'theme': {'color': '#1E3A5F'},
+    });
+    return _pendingPayment!.future;
+  }
+
   Future<void> _handleTopUp() async {
     final entered = double.tryParse(_amountController.text.trim());
-    if (entered == null || entered < 35) {
-      setState(() => _errorMessage = 'Minimum top-up amount is ₹35.');
+    if (entered == null || entered < _minimumTopUp) {
+      setState(() => _errorMessage = 'Minimum top-up amount is ₹${_minimumTopUp.toInt()}.');
       return;
     }
 
@@ -43,36 +104,49 @@ class _TopUpScreenState extends State<TopUpScreen> {
     });
 
     try {
-      // 1. Create Order via Razorpay backend API
-      final orderData = await WalletService.createTopUpOrder(entered);
-      final String orderId = orderData['orderId'] ?? 'order_${DateTime.now().millisecondsSinceEpoch}';
+      // 1. The backend creates (and records) the order; it decides the amount credited.
+      final order = await WalletService.createTopUpOrder(entered);
+      final orderId = order['orderId'] as String;
 
-      // 2. Perform Top-up payment confirmation
-      // In live production, Razorpay Checkout SDK displays payment sheet here.
-      // In dev/test environment, verifies order and credits balance.
-      final simulatedPaymentId = 'pay_${DateTime.now().millisecondsSinceEpoch}';
-      final simulatedSignature = 'sig_${DateTime.now().millisecondsSinceEpoch}';
-
-      await WalletService.topUp(
-        amount: entered,
-        razorpayOrderId: orderId,
-        razorpayPaymentId: simulatedPaymentId,
-        razorpaySignature: simulatedSignature,
-      );
+      Map<String, dynamic> result;
+      if (order['isMock'] == true) {
+        // Local development only (backend has ALLOW_SIMULATED_PAYMENTS=true and no Razorpay keys).
+        result = await WalletService.topUp(razorpayOrderId: orderId);
+      } else {
+        if (!_checkoutSupported) {
+          throw 'Online payments are only available in the Android and iOS apps.';
+        }
+        // 2. Razorpay Checkout collects the payment.
+        final payment = await _collectPayment(order);
+        // 3. The backend verifies the signature and the payment with Razorpay, then credits the wallet.
+        result = await WalletService.topUp(
+          razorpayOrderId: payment.orderId ?? orderId,
+          razorpayPaymentId: payment.paymentId,
+          razorpaySignature: payment.signature,
+        );
+      }
 
       if (!mounted) return;
+      final credited = (result['amountCredited'] as num?)?.toDouble() ?? entered;
+      final reinstated = result['isReinstated'] == true;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Successfully added ₹${entered.toStringAsFixed(2)} to your wallet!'),
+          content: Text(
+            reinstated
+                ? 'Added ₹${credited.toStringAsFixed(2)}. Your dues are cleared and your account is active again.'
+                : 'Added ₹${credited.toStringAsFixed(2)} to your wallet!',
+          ),
           backgroundColor: const Color(0xFF10B981),
         ),
       );
-      Navigator.pop(context);
+      Navigator.pop(context, true);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = e.toString().replaceAll('Exception:', '').trim();
       });
     } finally {
+      _pendingPayment = null;
       if (mounted) {
         setState(() => _isLoading = false);
       }
@@ -97,11 +171,7 @@ class _TopUpScreenState extends State<TopUpScreen> {
             children: [
               const Text(
                 'Enter Top-Up Amount',
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF0F172A),
-                ),
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
               ),
               const SizedBox(height: 6),
               const Text(
@@ -123,10 +193,7 @@ class _TopUpScreenState extends State<TopUpScreen> {
                       Icon(Icons.error_outline, color: Colors.red.shade700, size: 20),
                       const SizedBox(width: 8),
                       Expanded(
-                        child: Text(
-                          _errorMessage!,
-                          style: TextStyle(color: Colors.red.shade800, fontSize: 13),
-                        ),
+                        child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade800, fontSize: 13)),
                       ),
                     ],
                   ),
@@ -183,7 +250,7 @@ class _TopUpScreenState extends State<TopUpScreen> {
                     SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'Secured by Razorpay • Minimum top-up is ₹35 per product guidelines.',
+                        'Secured by Razorpay • UPI, cards & netbanking • Minimum top-up is ₹35.',
                         style: TextStyle(color: Color(0xFF1E40AF), fontSize: 12),
                       ),
                     ),
@@ -203,15 +270,8 @@ class _TopUpScreenState extends State<TopUpScreen> {
                     elevation: 0,
                   ),
                   child: _isLoading
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                        )
-                      : const Text(
-                          'Proceed to Pay',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                        ),
+                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Text('Proceed to Pay', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ),
             ],

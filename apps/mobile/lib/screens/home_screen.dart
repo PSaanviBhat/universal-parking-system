@@ -9,6 +9,7 @@ import 'wallet_screen.dart';
 import 'qr_scanner_screen.dart';
 import 'active_session_screen.dart';
 import 'session_history_screen.dart';
+import 'topup_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -62,6 +63,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final bool isDebt = _walletData?['isDebt'] == true;
     final double debtAmount = (_walletData?['debtAmount'] as num?)?.toDouble() ?? 0.0;
     final double? debtHoursRemaining = (_walletData?['debtHoursRemaining'] as num?)?.toDouble();
+    final bool isSuspended = _walletData?['isSuspended'] == true;
+    final num fineAmount = (_walletData?['rules']?['fineAmount'] as num?) ?? 500;
+    final active = sessionProvider.activeSession;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC), // Slate 50
@@ -136,9 +140,11 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                debtHoursRemaining != null
-                                    ? 'Repay within ${debtHoursRemaining.toStringAsFixed(1)} hrs to avoid ₹100 fine & suspension.'
-                                    : 'Please top up your wallet to clear dues.',
+                                isSuspended
+                                    ? 'Your account is suspended. Top up the full amount to lift it and park again.'
+                                    : debtHoursRemaining != null
+                                        ? 'Repay within ${debtHoursRemaining.toStringAsFixed(1)} hrs. After that we try autopay; if it fails, a ₹${fineAmount.toStringAsFixed(0)} fine applies and your account is suspended.'
+                                        : 'Please top up your wallet to clear dues.',
                                 style: const TextStyle(color: Color(0xFFB91C1C), fontSize: 11),
                               ),
                             ],
@@ -217,7 +223,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               onPressed: () {
                                 Navigator.push(
                                   context,
-                                  MaterialPageRoute(builder: (_) => const WalletScreen()),
+                                  MaterialPageRoute(builder: (_) => const TopUpScreen()),
                                 ).then((_) => _loadDashboard());
                               },
                               icon: const Icon(Icons.add_rounded, size: 18),
@@ -254,11 +260,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
 
                 // Active Session Pill Card (if parked)
-                if (sessionProvider.hasActiveSession) ...[
+                if (active != null) ...[
                   const Padding(
                     padding: EdgeInsets.fromLTRB(24, 20, 24, 8),
                     child: Text(
-                      'Live Parking Session',
+                      'Your Car Is Parked',
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -271,7 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => ActiveSessionScreen(session: sessionProvider.activeSession!),
+                          builder: (_) => ActiveSessionScreen(session: active),
                         ),
                       ).then((_) => _loadDashboard());
                     },
@@ -306,12 +312,17 @@ class _HomeScreenState extends State<HomeScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  sessionProvider.activeSession?['vehicle']?['licensePlate'] ?? 'Vehicle',
+                                  active.licensePlate,
                                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
-                                  'Slot: ${sessionProvider.activeSession?['slot']?['slotNumber'] ?? 'Assigned'} (${sessionProvider.activeSession?['slot']?['level']?['displayName'] ?? ''})',
+                                  'Slot ${active.slotNumber} • ${active.levelName}',
+                                  style: const TextStyle(color: Color(0xFF1E3A5F), fontSize: 13, fontWeight: FontWeight.w600),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  active.facilityName,
                                   style: const TextStyle(color: Colors.black54, fontSize: 12),
                                 ),
                               ],

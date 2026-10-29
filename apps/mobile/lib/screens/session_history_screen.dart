@@ -72,12 +72,10 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
                     separatorBuilder: (_, __) => const SizedBox(height: 12),
                     itemBuilder: (context, index) {
                       final s = _sessions[index];
-                      final facility = s['facility'] ?? {};
-                      final vehicle = s['vehicle'] ?? {};
                       final double fee = (s['totalFee'] as num?)?.toDouble() ?? 0.0;
                       final int duration = (s['durationMinutes'] as num?)?.toInt() ?? 0;
                       final exitTimeStr = s['exitTime'] != null
-                          ? dateFmt.format(DateTime.parse(s['exitTime']))
+                          ? dateFmt.format(DateTime.parse(s['exitTime']).toLocal())
                           : 'Ongoing';
 
                       return GestureDetector(
@@ -119,12 +117,12 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      facility['name'] ?? 'Parking Facility',
+                                      s['facilityName'] ?? 'Parking Facility',
                                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      '${vehicle["licensePlate"] ?? ""} • ${(duration / 60).floor()}h ${duration % 60}m',
+                                      '${s["licensePlate"] ?? ""} • ${(duration / 60).floor()}h ${duration % 60}m',
                                       style: const TextStyle(color: Colors.black54, fontSize: 12),
                                     ),
                                     const SizedBox(height: 2),
@@ -156,7 +154,7 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
                                       borderRadius: BorderRadius.circular(6),
                                     ),
                                     child: Text(
-                                      s['paymentStatus'] ?? 'PAID',
+                                      s['status'] == 'DISPUTED' ? 'DISPUTED' : (s['paymentStatus'] ?? 'PAID'),
                                       style: TextStyle(
                                         color: s['paymentStatus'] == 'PAID'
                                             ? const Color(0xFF047857)

@@ -1,0 +1,52 @@
+{
+  "success": true,
+  "data": {
+    "id": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+    "vehicleId": "6ccdc000-2a05-47e9-b5bd-6da0856d8097",
+    "userId": "5eb55edf-34e6-4917-a215-af4abb461afd",
+    "facilityId": "9bfb9a6b-fe53-43d6-90dc-2bac68aeae61",
+    "slotId": "21093e1e-f792-424f-8ec8-72b7c23f198f",
+    "entryGateId": "03705351-d34d-462b-82a2-9003ec05b2cf",
+    "exitGateId": null,
+    "entryTime": "2026-10-29T19:01:15.857Z",
+    "exitTime": null,
+    "durationMinutes": 1,
+    "feeRateSnapshot": 30,
+    "totalFee": null,
+    "status": "ACTIVE",
+    "paymentStatus": "PENDING",
+    "resolutionNote": null,
+    "createdAt": "2026-10-29T19:01:15.859Z",
+    "updatedAt": "2026-10-29T19:01:15.859Z",
+    "facility": {
+      "id": "9bfb9a6b-fe53-43d6-90dc-2bac68aeae61",
+      "name": "Phoenix Mall",
+      "address": "123 Main Street, City Center",
+      "feeRatePerHour": "30"
+    },
+    "vehicle": {
+      "id": "6ccdc000-2a05-47e9-b5bd-6da0856d8097",
+      "licensePlate": "KA03FX3338",
+      "nickname": "Fixture"
+    },
+    "slot": {
+      "id": "21093e1e-f792-424f-8ec8-72b7c23f198f",
+      "slotNumber": "G-04",
+      "coordinateX": 70,
+      "coordinateY": 25,
+      "level": {
+        "id": "808de9bb-1faa-4f8e-b79a-8187989f7e8c",
+        "levelCode": "G",
+        "displayName": "Ground Floor",
+        "floorMapUrl": null
+      }
+    },
+    "entryGate": {
+      "id": "03705351-d34d-462b-82a2-9003ec05b2cf",
+      "gateName": "North Entry Gate"
+    },
+    "exitGate": null,
+    "walletTransactions": [],
+    "runningFee": 30
+  }
+}

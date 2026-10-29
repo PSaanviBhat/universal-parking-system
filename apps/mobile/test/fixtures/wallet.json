@@ -1,0 +1,23 @@
+{
+  "success": true,
+  "data": {
+    "walletId": "532e5d1a-ca32-4050-b9a8-d832b4840fe2",
+    "balance": -30,
+    "isDebt": true,
+    "debtAmount": 30,
+    "debtCreatedAt": "2026-10-29T19:01:19.039Z",
+    "debtDeadline": "2026-10-31T19:01:19.039Z",
+    "debtHoursRemaining": 48,
+    "isDebtExpired": false,
+    "isSuspended": false,
+    "autopayAuthorized": true,
+    "autopayReady": false,
+    "linkedPaymentMethod": null,
+    "rules": {
+      "minimumTopUp": 35,
+      "maximumTopUp": 10000,
+      "debtWindowHours": 48,
+      "fineAmount": 500
+    }
+  }
+}

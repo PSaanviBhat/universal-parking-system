@@ -614,9 +614,11 @@ sessionRouter.get('/history', async (req: AuthenticatedRequest, res: Response): 
           entryTime: s.entryTime,
           exitTime: s.exitTime,
           durationMinutes: s.durationMinutes,
+          hourlyRate: Number(s.feeRateSnapshot),
           totalFee: Number(s.totalFee || 0),
           paymentStatus: s.paymentStatus,
           status: s.status,
+          resolutionNote: s.resolutionNote,
         })),
       },
     });

@@ -1,0 +1,28 @@
+{
+  "success": true,
+  "message": "Exit cleared! Your wallet has insufficient balance and entered debt. Please repay within 48 hours to avoid autopay/suspension.",
+  "data": {
+    "session": {
+      "id": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+      "licensePlate": "KA03FX3338",
+      "facilityName": "Phoenix Mall",
+      "slotNumber": "G-05",
+      "levelName": "Ground Floor",
+      "entryTime": "2026-10-29T19:01:15.857Z",
+      "exitTime": "2026-10-29T19:01:19.039Z",
+      "durationMinutes": 1,
+      "totalFee": 30,
+      "status": "COMPLETED",
+      "paymentStatus": "DEBT"
+    },
+    "wallet": {
+      "previousBalance": 0,
+      "amountDeducted": 30,
+      "remainingBalance": -30,
+      "isDebt": true,
+      "debtAmount": 30,
+      "debtDeadline": "2026-10-31T19:01:19.039Z"
+    },
+    "exitGateName": "North Exit Gate"
+  }
+}

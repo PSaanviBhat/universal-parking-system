@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
+import '../models/session_view.dart';
 import '../services/session_service.dart';
 
 class SessionProvider extends ChangeNotifier {
-  Map<String, dynamic>? _activeSession;
+  SessionView? _activeSession;
   bool _isLoading = false;
 
-  Map<String, dynamic>? get activeSession => _activeSession;
+  SessionView? get activeSession => _activeSession;
   bool get hasActiveSession => _activeSession != null;
   bool get isLoading => _isLoading;
 
@@ -23,7 +24,7 @@ class SessionProvider extends ChangeNotifier {
     }
   }
 
-  void setActiveSession(Map<String, dynamic>? session) {
+  void setActiveSession(SessionView? session) {
     _activeSession = session;
     notifyListeners();
   }

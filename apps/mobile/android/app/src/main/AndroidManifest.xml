@@ -1,6 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Release builds need these explicitly: API calls + Razorpay checkout, and gate QR scanning. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+
     <application
-        android:label="parking_app"
+        android:label="Smart Parking"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

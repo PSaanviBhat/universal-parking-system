@@ -1,130 +1,129 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'home_screen.dart';
 
+/// Receipt shown right after a successful exit.
+/// Reads `POST /api/sessions/exit` data: `session{...}`, `wallet{previousBalance,
+/// amountDeducted, remainingBalance, isDebt, debtAmount, debtDeadline}`, `exitGateName`.
 class ExitSummaryScreen extends StatelessWidget {
   final Map<String, dynamic> exitData;
 
   const ExitSummaryScreen({super.key, required this.exitData});
 
+  static double _num(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0.0;
+
   @override
   Widget build(BuildContext context) {
-    final closedSession = exitData['closedSession'] ?? exitData['session'] ?? {};
-    final updatedWallet = exitData['updatedWallet'] ?? {};
-    final double totalFee = (closedSession['totalFee'] as num?)?.toDouble() ?? 0.0;
-    final int durationMins = (closedSession['durationMinutes'] as num?)?.toInt() ?? 0;
-    final double newBalance = (updatedWallet['balance'] as num?)?.toDouble() ?? 0.0;
-    final bool isDebt = newBalance < 0;
+    final session = Map<String, dynamic>.from(exitData['session'] ?? const {});
+    final wallet = Map<String, dynamic>.from(exitData['wallet'] ?? const {});
+    final double totalFee = _num(session['totalFee']);
+    final int durationMins = _num(session['durationMinutes']).toInt();
+    final double previousBalance = _num(wallet['previousBalance']);
+    final double deducted = _num(wallet['amountDeducted'] ?? totalFee);
+    final double remaining = _num(wallet['remainingBalance']);
+    final bool isDebt = wallet['isDebt'] == true || remaining < 0;
+    final deadline = wallet['debtDeadline'] != null ? DateTime.tryParse(wallet['debtDeadline'].toString())?.toLocal() : null;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-          child: Column(
-            children: [
-              const SizedBox(height: 20),
-              Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withOpacity(0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 64),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Exit Barrier Cleared!',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 26,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: -0.5,
-                ),
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                'Thank you for using Universal Parking.',
-                style: TextStyle(color: Colors.white60, fontSize: 13),
-              ),
-              const SizedBox(height: 28),
-
-              // Summary Card
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(22),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(22),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.2),
-                      blurRadius: 18,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
+        child: Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
                 child: Column(
                   children: [
-                    const Text(
-                      'TOTAL PARKING FEE',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black45,
-                        letterSpacing: 1,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '₹${totalFee.toStringAsFixed(2)}',
-                      style: const TextStyle(
-                        fontSize: 38,
-                        fontWeight: FontWeight.w900,
-                        color: Color(0xFF1E3A5F),
-                        letterSpacing: -1,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    const Divider(),
                     const SizedBox(height: 12),
-                    _summaryRow('Duration', '${(durationMins / 60).floor()}h ${durationMins % 60}m'),
-                    _summaryRow('Payment Status', isDebt ? 'UNPAID (DEBT)' : 'PAID (WALLET)'),
-                    _summaryRow(
-                      'Wallet Balance',
-                      '₹${newBalance.toStringAsFixed(2)}',
-                      valueColor: isDebt ? Colors.red.shade700 : const Color(0xFF047857),
+                    Container(
+                      padding: const EdgeInsets.all(18),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981).withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 64),
                     ),
-                  ],
-                ),
-              ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Exit Barrier Cleared!',
+                      style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      [session['licensePlate'], session['facilityName']].where((e) => e != null).join(' • '),
+                      style: const TextStyle(color: Colors.white60, fontSize: 13),
+                    ),
+                    const SizedBox(height: 28),
 
-              if (isDebt) ...[
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFEF2F2),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFFFCA5A5)),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.info_outline_rounded, color: Color(0xFFDC2626), size: 22),
-                      SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Your wallet had insufficient balance. A 48-hour repayment window is open before autopay/fine triggers.',
-                          style: TextStyle(color: Color(0xFF991B1B), fontSize: 12),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(22),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                      child: Column(
+                        children: [
+                          const Text(
+                            'PARKING CHARGE',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black45, letterSpacing: 1),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '₹${totalFee.toStringAsFixed(2)}',
+                            style: const TextStyle(fontSize: 38, fontWeight: FontWeight.w900, color: Color(0xFF1E3A5F), letterSpacing: -1),
+                          ),
+                          const SizedBox(height: 16),
+                          const Divider(),
+                          const SizedBox(height: 12),
+                          _summaryRow('Duration', '${durationMins ~/ 60}h ${durationMins % 60}m'),
+                          if (session['slotNumber'] != null)
+                            _summaryRow('Slot', '${session['slotNumber']} (${session['levelName'] ?? ''})'),
+                          _summaryRow('Wallet before exit', '₹${previousBalance.toStringAsFixed(2)}'),
+                          _summaryRow('Amount deducted', '− ₹${deducted.toStringAsFixed(2)}'),
+                          _summaryRow(
+                            'Remaining balance',
+                            '₹${remaining.toStringAsFixed(2)}',
+                            valueColor: isDebt ? Colors.red.shade700 : const Color(0xFF047857),
+                          ),
+                          _summaryRow('Payment status', isDebt ? 'UNPAID (DEBT)' : 'PAID FROM WALLET'),
+                        ],
+                      ),
+                    ),
+
+                    if (isDebt) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: const Color(0xFFFCA5A5)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.info_outline_rounded, color: Color(0xFFDC2626), size: 22),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Your wallet didn\'t cover this charge, so you owe ₹${remaining.abs().toStringAsFixed(2)}. '
+                                '${deadline != null ? 'Top up by ${DateFormat('dd MMM, hh:mm a').format(deadline)} ' : 'Top up soon '}'
+                                'to avoid an automatic autopay charge, or a fine and account suspension if that fails.',
+                                style: const TextStyle(color: Color(0xFF991B1B), fontSize: 12),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
-                  ),
+                  ],
                 ),
-              ],
-
-              const Spacer(),
-
-              SizedBox(
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
+              child: SizedBox(
                 width: double.infinity,
                 height: 54,
                 child: ElevatedButton(
@@ -141,14 +140,11 @@ class ExitSummaryScreen extends StatelessWidget {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     elevation: 0,
                   ),
-                  child: const Text(
-                    'Done / Back to Home',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
+                  child: const Text('Done / Back to Home', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -163,11 +159,7 @@ class ExitSummaryScreen extends StatelessWidget {
           Text(label, style: const TextStyle(color: Colors.black54, fontSize: 13)),
           Text(
             value,
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 13,
-              color: valueColor ?? Colors.black87,
-            ),
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: valueColor ?? Colors.black87),
           ),
         ],
       ),

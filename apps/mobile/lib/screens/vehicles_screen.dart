@@ -145,14 +145,18 @@ class _VehiclesScreenState extends State<VehiclesScreen> {
                                     style: const TextStyle(color: Colors.black54, fontSize: 13),
                                   ),
                                 ],
+                                const SizedBox(height: 6),
+                                _ParkingStateBadge(vehicle: v),
                               ],
                             ),
                           ),
-                          IconButton(
-                            onPressed: () => _deleteVehicle(v['id']),
-                            icon: const Icon(Icons.delete_outline_rounded, color: Colors.red),
-                            tooltip: 'Delete',
-                          ),
+                          // A parked vehicle can't be removed until it exits (the API refuses too).
+                          if (v['parkingState'] != 'PARKED')
+                            IconButton(
+                              onPressed: () => _deleteVehicle(v['id']),
+                              icon: const Icon(Icons.delete_outline_rounded, color: Colors.red),
+                              tooltip: 'Delete',
+                            ),
                         ],
                       ),
                     );
@@ -168,6 +172,40 @@ class _VehiclesScreenState extends State<VehiclesScreen> {
         backgroundColor: const Color(0xFF1E3A5F),
         icon: const Icon(Icons.add_rounded, color: Colors.white),
         label: const Text('Add Vehicle', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
+}
+
+/// NOT_PARKED -> PARKED -> EXITED, as reported by GET /api/vehicles.
+class _ParkingStateBadge extends StatelessWidget {
+  final dynamic vehicle;
+
+  const _ParkingStateBadge({required this.vehicle});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = vehicle['parkingState'] ?? 'NOT_PARKED';
+    final active = vehicle['activeSession'];
+
+    final (String label, Color color) = switch (state) {
+      'PARKED' => (
+          'Parked${active != null ? ' • ${active['facilityName']} ${active['slotNumber']}' : ''}',
+          const Color(0xFF2563EB)
+        ),
+      'EXITED' => ('Exited', const Color(0xFF047857)),
+      _ => ('Not parked', Colors.black45),
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
       ),
     );
   }

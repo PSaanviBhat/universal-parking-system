@@ -196,8 +196,18 @@ class _WalletScreenState extends State<WalletScreen> {
                             );
 
                             if (type != null) {
-                              await WalletService.addPaymentMethod(type: type);
-                              _loadAll();
+                              try {
+                                await WalletService.addPaymentMethod(type: type);
+                                _loadAll();
+                              } catch (e) {
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Could not save payment method: $e'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
                             }
                           },
                           child: const Text('+ Add Method'),
@@ -293,7 +303,8 @@ class _WalletScreenState extends State<WalletScreen> {
                         separatorBuilder: (_, __) => const SizedBox(height: 8),
                         itemBuilder: (context, index) {
                           final t = _transactions[index];
-                          final isCredit = t['type'] == 'TOP_UP' || t['type'] == 'DEBT_REPAYMENT';
+                          const creditTypes = {'TOP_UP', 'DEBT_REPAYMENT', 'AUTOPAY', 'REFUND'};
+                          final isCredit = creditTypes.contains(t['type']);
                           final double amt = (t['amount'] as num?)?.toDouble() ?? 0.0;
                           final dateStr = t['createdAt'] != null
                               ? dateFmt.format(DateTime.parse(t['createdAt']))

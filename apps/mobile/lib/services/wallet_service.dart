@@ -42,9 +42,10 @@ class WalletService {
     return data['data'];
   }
 
+  /// Credits the wallet for a paid order. The backend credits the amount stored on
+  /// the order, so no amount is sent from the app.
   static Future<Map<String, dynamic>> topUp({
-    required double amount,
-    String? razorpayOrderId,
+    required String razorpayOrderId,
     String? razorpayPaymentId,
     String? razorpaySignature,
   }) async {
@@ -58,7 +59,6 @@ class WalletService {
         'Authorization': 'Bearer $token',
       },
       body: jsonEncode({
-        'amount': amount,
         'razorpayOrderId': razorpayOrderId,
         'razorpayPaymentId': razorpayPaymentId,
         'razorpaySignature': razorpaySignature,

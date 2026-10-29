@@ -1,0 +1,30 @@
+{
+  "success": true,
+  "data": {
+    "total": 1,
+    "page": 1,
+    "limit": 20,
+    "totalPages": 1,
+    "sessions": [
+      {
+        "sessionId": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+        "licensePlate": "KA03FX3338",
+        "vehicleNickname": "Fixture",
+        "facilityName": "Phoenix Mall",
+        "facilityAddress": "123 Main Street, City Center",
+        "slotNumber": "G-05",
+        "levelName": "Ground Floor",
+        "entryGate": "North Entry Gate",
+        "exitGate": "North Exit Gate",
+        "entryTime": "2026-10-29T19:01:15.857Z",
+        "exitTime": "2026-10-29T19:01:19.039Z",
+        "durationMinutes": 1,
+        "hourlyRate": 30,
+        "totalFee": 30,
+        "paymentStatus": "DEBT",
+        "status": "COMPLETED",
+        "resolutionNote": null
+      }
+    ]
+  }
+}

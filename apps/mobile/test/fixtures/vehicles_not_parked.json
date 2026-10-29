@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "data": [
+    {
+      "id": "6ccdc000-2a05-47e9-b5bd-6da0856d8097",
+      "licensePlate": "KA03FX3338",
+      "nickname": "Fixture",
+      "createdAt": "2026-10-29T19:01:14.696Z",
+      "parkingState": "NOT_PARKED",
+      "activeSessionId": null,
+      "isParked": false,
+      "activeSession": null
+    }
+  ]
+}

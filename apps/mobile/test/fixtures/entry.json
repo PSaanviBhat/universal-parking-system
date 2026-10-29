@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "message": "Parking session started. Slot allocated successfully.",
+  "walletWarning": "Your wallet balance (₹0.00) is below the 1-hour minimum charge of ₹30.00. Top up before you exit to avoid going into debt.",
+  "data": {
+    "walletBalance": 0,
+    "walletWarning": "Your wallet balance (₹0.00) is below the 1-hour minimum charge of ₹30.00. Top up before you exit to avoid going into debt.",
+    "session": {
+      "id": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+      "entryTime": "2026-10-29T19:01:15.857Z",
+      "feeRatePerHour": 30,
+      "status": "ACTIVE"
+    },
+    "vehicle": {
+      "id": "6ccdc000-2a05-47e9-b5bd-6da0856d8097",
+      "licensePlate": "KA03FX3338"
+    },
+    "facility": {
+      "id": "9bfb9a6b-fe53-43d6-90dc-2bac68aeae61",
+      "name": "Phoenix Mall",
+      "address": "123 Main Street, City Center"
+    },
+    "assignedSlot": {
+      "slotId": "21093e1e-f792-424f-8ec8-72b7c23f198f",
+      "slotNumber": "G-04",
+      "levelCode": "G",
+      "levelName": "Ground Floor",
+      "floorMapUrl": null,
+      "coordinateX": 70,
+      "coordinateY": 25,
+      "directions": "Enter through North Entry Gate, proceed to Ground Floor, follow row markers to Slot G-04."
+    }
+  }
+}

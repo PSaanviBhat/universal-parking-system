@@ -1,0 +1,21 @@
+{
+  "success": true,
+  "data": [
+    {
+      "id": "6ccdc000-2a05-47e9-b5bd-6da0856d8097",
+      "licensePlate": "KA03FX3338",
+      "nickname": "Fixture",
+      "createdAt": "2026-10-29T19:01:14.696Z",
+      "parkingState": "PARKED",
+      "activeSessionId": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+      "isParked": true,
+      "activeSession": {
+        "sessionId": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+        "facilityName": "Phoenix Mall",
+        "level": "Ground Floor",
+        "slotNumber": "G-04",
+        "entryTime": "2026-10-29T19:01:15.857Z"
+      }
+    }
+  ]
+}

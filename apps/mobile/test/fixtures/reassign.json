@@ -1,0 +1,18 @@
+{
+  "success": true,
+  "message": "Slot successfully reassigned to G-05 on Ground Floor. Operator alerted.",
+  "data": {
+    "sessionId": "3e2d85e2-8a9e-4634-84ee-206a86dd21c8",
+    "oldSlotNumber": "G-04",
+    "newAssignedSlot": {
+      "slotId": "e00553ff-5775-4634-9f3f-5b881bc996a6",
+      "slotNumber": "G-05",
+      "levelCode": "G",
+      "levelName": "Ground Floor",
+      "floorMapUrl": null,
+      "coordinateX": 90,
+      "coordinateY": 25,
+      "directions": "Proceed to Ground Floor, follow row markers to new Slot G-05."
+    }
+  }
+}
