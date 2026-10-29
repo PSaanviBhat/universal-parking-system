@@ -1,19 +1,22 @@
 import { Router, Request, Response } from 'express';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../utils/prisma';
+import { createLoginLimiter } from '../middleware/rateLimit';
 
 export const operatorAuthRouter = Router();
 
-const DEFAULT_OPERATORS = [
-  { id: 'op-001', username: 'operator1', password: 'Op@12345' },
-  { id: 'op-002', username: 'operator2', password: 'Op@12345' },
-];
+const loginLimiter = createLoginLimiter();
+
+// Compared against when the username does not exist, so response time does not reveal valid usernames.
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
 
 /**
  * POST /api/operator-auth/login
- * Authenticates parking operators and issues an operator JWT.
+ * Authenticates a parking operator against the Operator table and issues an
+ * operator JWT scoped to the operator's own facility.
  */
-operatorAuthRouter.post('/login', async (req: Request, res: Response): Promise<void> => {
+operatorAuthRouter.post('/login', loginLimiter, async (req: Request, res: Response): Promise<void> => {
   try {
     const { username, password } = req.body;
 
@@ -22,18 +25,16 @@ operatorAuthRouter.post('/login', async (req: Request, res: Response): Promise<v
       return;
     }
 
-    const op = DEFAULT_OPERATORS.find((o) => o.username === username && o.password === password);
-    if (!op) {
+    const op = await prisma.operator.findUnique({
+      where: { username: String(username).trim().toLowerCase() },
+      include: { facility: { select: { id: true, name: true } } },
+    });
+
+    const passwordOk = await bcrypt.compare(String(password), op?.passwordHash ?? DUMMY_HASH);
+    if (!op || !passwordOk || !op.isActive) {
       res.status(401).json({ success: false, message: 'Invalid operator credentials.' });
       return;
     }
-
-    // Attempt to associate with an active facility in the database
-    const facility = await prisma.parkingFacility.findFirst({
-      select: { id: true, name: true },
-    });
-
-    const facilityId = facility?.id || 'default-facility';
 
     const secret = process.env.OPERATOR_JWT_SECRET;
     if (!secret) {
@@ -44,7 +45,7 @@ operatorAuthRouter.post('/login', async (req: Request, res: Response): Promise<v
       {
         operatorId: op.id,
         username: op.username,
-        facilityId,
+        facilityId: op.facilityId,
         role: 'operator',
       },
       secret,
@@ -57,8 +58,8 @@ operatorAuthRouter.post('/login', async (req: Request, res: Response): Promise<v
       operator: {
         id: op.id,
         username: op.username,
-        facilityId,
-        facilityName: facility?.name || 'Main Parking Facility',
+        facilityId: op.facilityId,
+        facilityName: op.facility.name,
       },
     });
   } catch (error) {

@@ -6,8 +6,8 @@ import { useRouter } from 'next/navigation';
 export default function LoginPage() {
   const router = useRouter();
   const [role, setRole] = useState<'operator' | 'admin'>('operator');
-  const [username, setUsername] = useState('operator1');
-  const [password, setPassword] = useState('Op@12345');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -16,13 +16,7 @@ export default function LoginPage() {
   const handleRoleChange = (newRole: 'operator' | 'admin') => {
     setRole(newRole);
     setError(null);
-    if (newRole === 'operator') {
-      setUsername('operator1');
-      setPassword('Op@12345');
-    } else {
-      setUsername('superadmin');
-      setPassword('Admin@12345');
-    }
+    setPassword('');
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -147,14 +141,9 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="mt-6 pt-4 border-t border-slate-800 text-center text-xs text-slate-500">
-          <p>
-            Default operator: <code className="text-slate-300">operator1</code> / <code className="text-slate-300">Op@12345</code>
-          </p>
-          <p className="mt-1">
-            Default admin: <code className="text-slate-300">superadmin</code> / <code className="text-slate-300">Admin@12345</code>
-          </p>
-        </div>
+        <p className="mt-6 pt-4 border-t border-slate-800 text-center text-xs text-slate-500">
+          Staff accounts are created by an administrator. Ask your admin if you don&apos;t have one.
+        </p>
       </div>
     </div>
   );

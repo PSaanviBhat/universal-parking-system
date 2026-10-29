@@ -27,23 +27,52 @@ import { adminAuthRouter } from './routes/adminAuth';
 import { paymentMethodsRouter } from './routes/paymentMethods';
 import { facilitiesRouter } from './routes/facilities';
 import { processExpiredDebts } from './services/debtWorker';
+import { verifyStaffToken } from './middleware/auth';
 
 const app = express();
 
+// Render (and most PaaS) terminate TLS at a proxy: trust the first hop so
+// req.ip is the real client IP for rate limiting.
+app.set('trust proxy', 1);
+
 const httpServer = createServer(app);
+
+const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:4000',
+  ...(process.env.DASHBOARD_URL || '').split(',').map((o) => o.trim().replace(/\/$/, '')),
+].filter(Boolean);
 
 // ─── Socket.io (real-time operator dashboard) ────────────────────────────────
 export const io = new Server(httpServer, {
   cors: {
-    origin: process.env.DASHBOARD_URL || 'http://localhost:3000',
+    origin: ALLOWED_ORIGINS,
     methods: ['GET', 'POST'],
   },
+});
+
+// Only operators/admins may connect; the verified identity decides which facility rooms they can join.
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  const staff = typeof token === 'string' ? verifyStaffToken(token) : null;
+  if (!staff) {
+    next(new Error('Unauthorized'));
+    return;
+  }
+  socket.data.staff = staff;
+  next();
 });
 
 io.on('connection', (socket) => {
   console.log(`[Socket.io] Client connected: ${socket.id}`);
 
   socket.on('join:facility', (facilityId: string) => {
+    const staff = socket.data.staff as ReturnType<typeof verifyStaffToken>;
+    const allowed = staff && ('admin' in staff || staff.operator.facilityId === facilityId);
+    if (!allowed) {
+      socket.emit('error:forbidden', { message: 'You do not have access to this facility.' });
+      return;
+    }
     socket.join(`facility:${facilityId}`);
     console.log(`[Socket.io] ${socket.id} joined facility room: ${facilityId}`);
   });
@@ -54,12 +83,6 @@ io.on('connection', (socket) => {
 });
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-const ALLOWED_ORIGINS = [
-  'http://localhost:3000',
-  'http://localhost:4000',
-  process.env.DASHBOARD_URL || '',
-].filter(Boolean);
-
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) {

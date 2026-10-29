@@ -138,6 +138,30 @@ model ParkingFacility {
   levels          ParkingLevel[]
   gates           ParkingGate[]
   parkingSessions ParkingSession[]
+  operators       Operator[]
+}
+
+// ─── STAFF ACCOUNTS ───────────────────────────────────────────────────────────
+// Operators run one facility's kiosk/dashboard and can only see that facility.
+model Operator {
+  id           String          @id @default(uuid())
+  username     String          @unique
+  passwordHash String
+  facilityId   String
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+
+  facility     ParkingFacility @relation(fields: [facilityId], references: [id])
+
+  @@index([facilityId])
+}
+
+// Admins manage facilities, gates and operator accounts across the platform.
+model Admin {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
 }
 
 enum FacilityType {

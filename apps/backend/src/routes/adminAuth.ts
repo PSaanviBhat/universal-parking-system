@@ -1,17 +1,21 @@
 import { Router, Request, Response } from 'express';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { prisma } from '../utils/prisma';
+import { createLoginLimiter } from '../middleware/rateLimit';
 
 export const adminAuthRouter = Router();
 
-const DEFAULT_ADMINS = [
-  { id: 'admin-001', username: 'superadmin', password: 'Admin@12345', role: 'admin' },
-];
+const loginLimiter = createLoginLimiter();
+
+// Compared against when the username does not exist, so response time does not reveal valid usernames.
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
 
 /**
  * POST /api/admin-auth/login
- * Authenticates facility/system administrators and issues an admin JWT.
+ * Authenticates a platform administrator against the Admin table and issues an admin JWT.
  */
-adminAuthRouter.post('/login', async (req: Request, res: Response): Promise<void> => {
+adminAuthRouter.post('/login', loginLimiter, async (req: Request, res: Response): Promise<void> => {
   try {
     const { username, password } = req.body;
 
@@ -20,8 +24,12 @@ adminAuthRouter.post('/login', async (req: Request, res: Response): Promise<void
       return;
     }
 
-    const admin = DEFAULT_ADMINS.find((a) => a.username === username && a.password === password);
-    if (!admin) {
+    const admin = await prisma.admin.findUnique({
+      where: { username: String(username).trim().toLowerCase() },
+    });
+
+    const passwordOk = await bcrypt.compare(String(password), admin?.passwordHash ?? DUMMY_HASH);
+    if (!admin || !passwordOk) {
       res.status(401).json({ success: false, message: 'Invalid admin credentials.' });
       return;
     }
@@ -35,10 +43,10 @@ adminAuthRouter.post('/login', async (req: Request, res: Response): Promise<void
       {
         adminId: admin.id,
         username: admin.username,
-        role: admin.role,
+        role: 'admin',
       },
       secret,
-      { expiresIn: '24h' }
+      { expiresIn: '12h' }
     );
 
     res.status(200).json({
@@ -47,7 +55,7 @@ adminAuthRouter.post('/login', async (req: Request, res: Response): Promise<void
       admin: {
         id: admin.id,
         username: admin.username,
-        role: admin.role,
+        role: 'admin',
       },
     });
   } catch (error) {

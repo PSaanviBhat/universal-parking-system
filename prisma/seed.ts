@@ -1,30 +1,41 @@
 /**
- * Prisma Seed Script — Phase 1
+ * Prisma Seed Script
  *
- * Seeds the database with:
- * - 1 Parking Facility (Phoenix Mall)
- * - 2 Parking Levels (Ground Floor + Level 1)
- * - 20 Parking Slots (10 per level)
- * - 2 Entry Gates + 2 Exit Gates (with unique QR codes)
+ * Idempotent — safe to run against production:
+ * - Creates the "Phoenix Mall" facility (2 levels, 20 slots, 2 entry + 2 exit gates)
+ *   only if it does not already exist.
+ * - Upserts one admin and one operator (for Phoenix Mall) with bcrypt-hashed passwords.
+ *     SEED_ADMIN_USERNAME / SEED_ADMIN_PASSWORD        (default username: superadmin)
+ *     SEED_OPERATOR_USERNAME / SEED_OPERATOR_PASSWORD  (default username: operator1)
+ *   When a password env var is missing and the account is new, a random password is
+ *   generated and printed ONCE. Existing passwords are only changed when the env var is set.
+ *
+ * SEED_RESET=true wipes all data first (local dev only; refused when NODE_ENV=production).
  *
  * Run with: npm run db:seed (from apps/backend)
  */
 
 import { PrismaClient, FacilityType, GateType, SlotStatus } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
 const prisma = new PrismaClient();
 
-async function main() {
-  console.log('🌱 Starting database seed...\n');
+const FACILITY_NAME = 'Phoenix Mall';
 
-  // ─── Clean existing seed data ───────────────────────────────────────────────
-  console.log('🧹 Cleaning existing data...');
+async function resetAll() {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('SEED_RESET is not allowed when NODE_ENV=production.');
+  }
+  console.log('🧹 SEED_RESET=true — wiping all data...');
   await prisma.walletTransaction.deleteMany();
+  await prisma.parkingSlot.updateMany({ data: { currentSessionId: null } });
   await prisma.parkingSession.deleteMany();
   await prisma.parkingSlot.deleteMany();
   await prisma.parkingLevel.deleteMany();
   await prisma.parkingGate.deleteMany();
+  await prisma.operator.deleteMany();
   await prisma.parkingFacility.deleteMany();
   await prisma.suspensionRecord.deleteMany();
   await prisma.wallet.deleteMany();
@@ -32,152 +43,143 @@ async function main() {
   await prisma.paymentOrder.deleteMany();
   await prisma.vehicle.deleteMany();
   await prisma.user.deleteMany();
+  await prisma.admin.deleteMany();
   console.log('✅ Clean complete.\n');
+}
 
-  // ─── Create Parking Facility ────────────────────────────────────────────────
+async function ensureFacility() {
+  const existing = await prisma.parkingFacility.findFirst({
+    where: { name: FACILITY_NAME },
+    include: { gates: true },
+  });
+  if (existing) {
+    console.log(`🏢 Facility already exists: ${existing.name} (${existing.id}) — skipping creation.\n`);
+    return existing;
+  }
+
   console.log('🏢 Creating parking facility...');
   const facility = await prisma.parkingFacility.create({
     data: {
       id: uuidv4(),
-      name: 'Phoenix Mall',
+      name: FACILITY_NAME,
       type: FacilityType.MALL,
       address: '123 Main Street, City Center',
-      feeRatePerHour: 30.00, // ₹30/hour (product decision)
-    },
-  });
-  console.log(`   ✅ Facility created: ${facility.name} (${facility.id})\n`);
-
-  // ─── Create Parking Levels ──────────────────────────────────────────────────
-  console.log('🏗️  Creating parking levels...');
-
-  const levelGround = await prisma.parkingLevel.create({
-    data: {
-      id: uuidv4(),
-      facilityId: facility.id,
-      levelCode: 'G',
-      displayName: 'Ground Floor',
-      totalSlots: 10,
+      feeRatePerHour: 30.0, // ₹30/hour (product decision)
     },
   });
 
-  const levelOne = await prisma.parkingLevel.create({
-    data: {
-      id: uuidv4(),
-      facilityId: facility.id,
-      levelCode: 'L1',
-      displayName: 'Level 1',
-      totalSlots: 10,
-    },
-  });
-
-  console.log(`   ✅ Level created: ${levelGround.displayName} (${levelGround.levelCode})`);
-  console.log(`   ✅ Level created: ${levelOne.displayName} (${levelOne.levelCode})\n`);
-
-  // ─── Create Parking Slots ───────────────────────────────────────────────────
-  console.log('🅿️  Creating parking slots...');
-
-  const groundSlots = [];
-  for (let i = 1; i <= 10; i++) {
-    groundSlots.push({
-      id: uuidv4(),
-      levelId: levelGround.id,
-      facilityId: facility.id,
-      slotNumber: `G-${String(i).padStart(2, '0')}`, // G-01 to G-10
-      status: SlotStatus.AVAILABLE,
-      coordinateX: ((i - 1) % 5) * 20 + 10, // Simple 5-column grid (%)
-      coordinateY: Math.floor((i - 1) / 5) * 50 + 25,
-      isActive: true,
+  const levels = [
+    { code: 'G', name: 'Ground Floor', prefix: 'G' },
+    { code: 'L1', name: 'Level 1', prefix: 'L1' },
+  ];
+  for (const lvl of levels) {
+    const level = await prisma.parkingLevel.create({
+      data: { id: uuidv4(), facilityId: facility.id, levelCode: lvl.code, displayName: lvl.name, totalSlots: 10 },
     });
-  }
-
-  const level1Slots = [];
-  for (let i = 1; i <= 10; i++) {
-    level1Slots.push({
-      id: uuidv4(),
-      levelId: levelOne.id,
-      facilityId: facility.id,
-      slotNumber: `L1-${String(i).padStart(2, '0')}`, // L1-01 to L1-10
-      status: SlotStatus.AVAILABLE,
-      coordinateX: ((i - 1) % 5) * 20 + 10,
-      coordinateY: Math.floor((i - 1) / 5) * 50 + 25,
-      isActive: true,
+    await prisma.parkingSlot.createMany({
+      data: Array.from({ length: 10 }, (_, idx) => {
+        const i = idx + 1;
+        return {
+          id: uuidv4(),
+          levelId: level.id,
+          facilityId: facility.id,
+          slotNumber: `${lvl.prefix}-${String(i).padStart(2, '0')}`,
+          status: SlotStatus.AVAILABLE,
+          coordinateX: ((i - 1) % 5) * 20 + 10, // Simple 5-column grid (%)
+          coordinateY: Math.floor((i - 1) / 5) * 50 + 25,
+          isActive: true,
+        };
+      }),
     });
+    console.log(`   ✅ ${lvl.name}: 10 slots (${lvl.prefix}-01 to ${lvl.prefix}-10)`);
   }
-
-  await prisma.parkingSlot.createMany({ data: [...groundSlots, ...level1Slots] });
-  console.log(`   ✅ Created 10 slots on Ground Floor (G-01 to G-10)`);
-  console.log(`   ✅ Created 10 slots on Level 1 (L1-01 to L1-10)\n`);
-
-  // ─── Create Parking Gates ───────────────────────────────────────────────────
-  console.log('🚧 Creating parking gates...');
 
   // Each gate gets a unique QR string: "PARKING_GATE:<gateId>:<facilityId>:<type>"
-  const entryGate1Id = uuidv4();
-  const entryGate2Id = uuidv4();
-  const exitGate1Id = uuidv4();
-  const exitGate2Id = uuidv4();
+  const gates: { name: string; type: GateType }[] = [
+    { name: 'North Entry Gate', type: GateType.ENTRY },
+    { name: 'South Entry Gate', type: GateType.ENTRY },
+    { name: 'North Exit Gate', type: GateType.EXIT },
+    { name: 'South Exit Gate', type: GateType.EXIT },
+  ];
+  for (const g of gates) {
+    const id = uuidv4();
+    await prisma.parkingGate.create({
+      data: {
+        id,
+        facilityId: facility.id,
+        gateType: g.type,
+        gateName: g.name,
+        qrCodeData: `PARKING_GATE:${id}:${facility.id}:${g.type}`,
+        isActive: true,
+      },
+    });
+  }
+  console.log(`   ✅ Facility created: ${facility.name} (${facility.id})\n`);
 
-  const entryGate1 = await prisma.parkingGate.create({
-    data: {
-      id: entryGate1Id,
-      facilityId: facility.id,
-      gateType: GateType.ENTRY,
-      gateName: 'North Entry Gate',
-      qrCodeData: `PARKING_GATE:${entryGate1Id}:${facility.id}:ENTRY`,
-      isActive: true,
-    },
+  return prisma.parkingFacility.findUniqueOrThrow({ where: { id: facility.id }, include: { gates: true } });
+}
+
+/** Returns the password to set, or null to keep an existing account's password. */
+function resolvePassword(envVar: string, exists: boolean): { password: string | null; generated: boolean } {
+  const fromEnv = process.env[envVar];
+  if (fromEnv) {
+    if (fromEnv.length < 10) throw new Error(`${envVar} must be at least 10 characters.`);
+    return { password: fromEnv, generated: false };
+  }
+  if (exists) return { password: null, generated: false };
+  return { password: crypto.randomBytes(12).toString('base64url'), generated: true };
+}
+
+async function upsertAdmin() {
+  const username = (process.env.SEED_ADMIN_USERNAME || 'superadmin').toLowerCase();
+  const existing = await prisma.admin.findUnique({ where: { username } });
+  const { password, generated } = resolvePassword('SEED_ADMIN_PASSWORD', Boolean(existing));
+
+  if (existing && !password) {
+    console.log(`👤 Admin "${username}" exists — password unchanged.`);
+    return;
+  }
+  const passwordHash = await bcrypt.hash(password!, 10);
+  await prisma.admin.upsert({ where: { username }, update: { passwordHash }, create: { username, passwordHash } });
+  console.log(`👤 Admin "${username}" ${existing ? 'password updated' : 'created'}.`);
+  if (generated) console.log(`   🔑 Generated password (shown once): ${password}`);
+}
+
+async function upsertOperator(facilityId: string) {
+  const username = (process.env.SEED_OPERATOR_USERNAME || 'operator1').toLowerCase();
+  const existing = await prisma.operator.findUnique({ where: { username } });
+  const { password, generated } = resolvePassword('SEED_OPERATOR_PASSWORD', Boolean(existing));
+
+  if (existing && !password) {
+    console.log(`👷 Operator "${username}" exists — password unchanged.`);
+    return;
+  }
+  const passwordHash = await bcrypt.hash(password!, 10);
+  await prisma.operator.upsert({
+    where: { username },
+    update: { passwordHash },
+    create: { username, passwordHash, facilityId },
   });
+  console.log(`👷 Operator "${username}" (${FACILITY_NAME}) ${existing ? 'password updated' : 'created'}.`);
+  if (generated) console.log(`   🔑 Generated password (shown once): ${password}`);
+}
 
-  const entryGate2 = await prisma.parkingGate.create({
-    data: {
-      id: entryGate2Id,
-      facilityId: facility.id,
-      gateType: GateType.ENTRY,
-      gateName: 'South Entry Gate',
-      qrCodeData: `PARKING_GATE:${entryGate2Id}:${facility.id}:ENTRY`,
-      isActive: true,
-    },
-  });
+async function main() {
+  console.log('🌱 Starting database seed...\n');
 
-  const exitGate1 = await prisma.parkingGate.create({
-    data: {
-      id: exitGate1Id,
-      facilityId: facility.id,
-      gateType: GateType.EXIT,
-      gateName: 'North Exit Gate',
-      qrCodeData: `PARKING_GATE:${exitGate1Id}:${facility.id}:EXIT`,
-      isActive: true,
-    },
-  });
+  if (process.env.SEED_RESET === 'true') {
+    await resetAll();
+  }
 
-  const exitGate2 = await prisma.parkingGate.create({
-    data: {
-      id: exitGate2Id,
-      facilityId: facility.id,
-      gateType: GateType.EXIT,
-      gateName: 'South Exit Gate',
-      qrCodeData: `PARKING_GATE:${exitGate2Id}:${facility.id}:EXIT`,
-      isActive: true,
-    },
-  });
+  const facility = await ensureFacility();
+  await upsertAdmin();
+  await upsertOperator(facility.id);
 
-  console.log(`   ✅ Entry Gate: ${entryGate1.gateName}`);
-  console.log(`      QR: ${entryGate1.qrCodeData}`);
-  console.log(`   ✅ Entry Gate: ${entryGate2.gateName}`);
-  console.log(`      QR: ${entryGate2.qrCodeData}`);
-  console.log(`   ✅ Exit Gate:  ${exitGate1.gateName}`);
-  console.log(`      QR: ${exitGate1.qrCodeData}`);
-  console.log(`   ✅ Exit Gate:  ${exitGate2.gateName}`);
-  console.log(`      QR: ${exitGate2.qrCodeData}\n`);
-
-  // ─── Summary ─────────────────────────────────────────────────────────────────
-  console.log('─────────────────────────────────────────────');
-  console.log('✅ Seed complete! Summary:');
-  console.log(`   Facility : ${facility.name}`);
-  console.log(`   Levels   : 2 (Ground Floor + Level 1)`);
-  console.log(`   Slots    : 20 total (10 per level)`);
-  console.log(`   Gates    : 4 (2 entry + 2 exit)`);
-  console.log('─────────────────────────────────────────────\n');
+  console.log('\n🚧 Gate QR codes:');
+  for (const gate of facility.gates) {
+    console.log(`   ${gate.gateType.padEnd(5)} ${gate.gateName}: ${gate.qrCodeData}`);
+  }
+  console.log('\n✅ Seed complete.\n');
 }
 
 main()

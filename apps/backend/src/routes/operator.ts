@@ -2,7 +2,12 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/prisma';
 import { io } from '../index';
 import { Prisma, SessionStatus, PaymentStatus, SlotStatus, TransactionType } from '@prisma/client';
-import { operatorAuthGuard } from '../middleware/auth';
+import {
+  AuthenticatedRequest,
+  canAccessFacility,
+  requireFacilityAccess,
+  staffAuthGuard,
+} from '../middleware/auth';
 import {
   calculateFee,
   creditWallet,
@@ -17,8 +22,8 @@ import {
 
 export const operatorRouter = Router();
 
-// Apply operator auth guard to all operator endpoints
-operatorRouter.use(operatorAuthGuard);
+// Operators (own facility only) and admins (every facility)
+operatorRouter.use(staffAuthGuard);
 
 const SESSION_STATUSES = Object.values(SessionStatus) as string[];
 
@@ -86,7 +91,7 @@ function formatOperatorSession(s: OperatorSession, now: Date) {
  * - Active and stale sessions
  * - Today's entries, exits, and revenue (facility time zone)
  */
-operatorRouter.get('/stats/:facilityId', async (req: Request, res: Response): Promise<void> => {
+operatorRouter.get('/stats/:facilityId', requireFacilityAccess, async (req: Request, res: Response): Promise<void> => {
   try {
     const facilityId = String(req.params.facilityId);
     const today = startOfToday();
@@ -155,9 +160,10 @@ operatorRouter.get('/stats/:facilityId', async (req: Request, res: Response): Pr
 /**
  * GET /api/operator/sessions
  * Query params: ?status=COMPLETED&limit=20&facilityId=xyz
- * Returns completed or filtered sessions list across facility or globally.
+ * Operators always get their own facility's sessions; admins may filter by
+ * facilityId or list across all facilities.
  */
-operatorRouter.get('/sessions', async (req: Request, res: Response): Promise<void> => {
+operatorRouter.get('/sessions', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const status = parseStatusQuery(req.query.status);
     if (!status) {
@@ -166,7 +172,11 @@ operatorRouter.get('/sessions', async (req: Request, res: Response): Promise<voi
     }
 
     const where: Prisma.ParkingSessionWhereInput = { status };
-    if (req.query.facilityId) where.facilityId = String(req.query.facilityId);
+    if (req.operator) {
+      where.facilityId = req.operator.facilityId;
+    } else if (req.query.facilityId) {
+      where.facilityId = String(req.query.facilityId);
+    }
 
     const sessions = await prisma.parkingSession.findMany({
       where,
@@ -189,7 +199,7 @@ operatorRouter.get('/sessions', async (req: Request, res: Response): Promise<voi
  * entry time, slot, level, and dynamic running fee.
  * Also supports optional query ?status=COMPLETED|DISPUTED&limit=20
  */
-operatorRouter.get('/sessions/:facilityId', async (req: Request, res: Response): Promise<void> => {
+operatorRouter.get('/sessions/:facilityId', requireFacilityAccess, async (req: Request, res: Response): Promise<void> => {
   try {
     const facilityId = String(req.params.facilityId);
     const status = parseStatusQuery(req.query.status);
@@ -217,7 +227,7 @@ operatorRouter.get('/sessions/:facilityId', async (req: Request, res: Response):
  * GET /api/operator/slots/:facilityId
  * Returns slot occupancy visual grid grouped by parking levels.
  */
-operatorRouter.get('/slots/:facilityId', async (req: Request, res: Response): Promise<void> => {
+operatorRouter.get('/slots/:facilityId', requireFacilityAccess, async (req: Request, res: Response): Promise<void> => {
   try {
     const facilityId = String(req.params.facilityId);
 
@@ -253,6 +263,58 @@ operatorRouter.get('/slots/:facilityId', async (req: Request, res: Response): Pr
   }
 });
 
+/**
+ * GET /api/operator/vehicles/search?plate=KA01AB1234[&facilityId=]
+ * Lost-phone / forgotten-session lookup: finds vehicles by (partial) plate and
+ * returns their ACTIVE session in the operator's facility, so staff can verify
+ * the driver and force-close the session from the kiosk.
+ */
+operatorRouter.get('/vehicles/search', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const plate = String(req.query.plate || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+    if (plate.length < 3) {
+      res.status(400).json({ success: false, message: 'Enter at least 3 characters of the licence plate.' });
+      return;
+    }
+
+    const facilityId = req.operator
+      ? req.operator.facilityId
+      : req.query.facilityId
+      ? String(req.query.facilityId)
+      : undefined;
+
+    const vehicles = await prisma.vehicle.findMany({
+      where: { licensePlate: { contains: plate } },
+      take: 10,
+      include: {
+        user: { select: { name: true, phone: true } },
+        parkingSessions: {
+          where: { status: SessionStatus.ACTIVE, ...(facilityId ? { facilityId } : {}) },
+          include: operatorSessionInclude,
+        },
+      },
+    });
+
+    const now = new Date();
+    res.status(200).json({
+      success: true,
+      data: vehicles.map((v) => ({
+        vehicleId: v.id,
+        licensePlate: v.licensePlate,
+        nickname: v.nickname,
+        ownerName: v.user.name,
+        ownerPhone: v.user.phone,
+        activeSession: v.parkingSessions[0] ? formatOperatorSession(v.parkingSessions[0], now) : null,
+      })),
+    });
+  } catch (error) {
+    console.error('[Operator Vehicle Search Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to search vehicles.' });
+  }
+});
+
 const SETTLE_OUTCOMES = ['CHARGE', 'WAIVE', 'REFUND'] as const;
 type SettleOutcome = (typeof SETTLE_OUTCOMES)[number];
 
@@ -274,7 +336,7 @@ type SettleOutcome = (typeof SETTLE_OUTCOMES)[number];
  * Each transition is a conditional status update, so repeated or concurrent
  * requests can never charge, refund or release twice.
  */
-operatorRouter.patch('/sessions/:id/resolve', async (req: Request, res: Response): Promise<void> => {
+operatorRouter.patch('/sessions/:id/resolve', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const sessionId = String(req.params.id);
     const { action, resolutionNote } = req.body;
@@ -296,7 +358,7 @@ operatorRouter.patch('/sessions/:id/resolve', async (req: Request, res: Response
       },
     });
 
-    if (!session) {
+    if (!session || !canAccessFacility(req, session.facilityId)) {
       res.status(404).json({ success: false, message: 'Parking session not found.' });
       return;
     }

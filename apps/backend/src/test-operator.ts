@@ -11,6 +11,7 @@
  */
 
 import http from 'http';
+import { operatorHeaders } from './test-helpers';
 import { app, httpServer } from '../src/index';
 import { prisma } from '../src/utils/prisma';
 import { GateType, SlotStatus } from '@prisma/client';
@@ -97,6 +98,7 @@ async function runTests() {
     const statsRes = await makeRequest({
       path: `/api/operator/stats/${mall.id}`,
       method: 'GET',
+      headers: operatorHeaders(mall.id),
     });
 
     if (
@@ -117,6 +119,7 @@ async function runTests() {
     const sessionsRes = await makeRequest({
       path: `/api/operator/sessions/${mall.id}`,
       method: 'GET',
+      headers: operatorHeaders(mall.id),
     });
 
     const foundSession = sessionsRes.data.data?.find((s: any) => s.sessionId === activeSessionId);
@@ -133,6 +136,7 @@ async function runTests() {
     const slotsRes = await makeRequest({
       path: `/api/operator/slots/${mall.id}`,
       method: 'GET',
+      headers: operatorHeaders(mall.id),
     });
 
     if (slotsRes.statusCode === 200 && Array.isArray(slotsRes.data.data) && slotsRes.data.data.length >= 2) {
@@ -153,12 +157,12 @@ async function runTests() {
       {
         path: `/api/operator/sessions/${activeSessionId}/resolve`,
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: operatorHeaders(mall.id),
       },
       { action: 'FORCE_CLOSE', resolutionNote: 'Driver lost phone, gate barrier override approved' }
     );
 
-    if (resolveRes.statusCode === 200 && resolveRes.data.data?.closed?.status === 'COMPLETED') {
+    if (resolveRes.statusCode === 200 && resolveRes.data.data?.session?.status === 'COMPLETED') {
       console.log('   ✅ Session successfully force-closed by operator.');
     } else {
       throw new Error(`Force close failed: ${JSON.stringify(resolveRes.data)}`);

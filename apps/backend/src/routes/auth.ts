@@ -1,19 +1,13 @@
 import { Router, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import rateLimit from 'express-rate-limit';
 import { prisma } from '../utils/prisma';
 import { authGuard, AuthenticatedRequest } from '../middleware/auth';
+import { createLoginLimiter } from '../middleware/rateLimit';
 
 export const authRouter = Router();
 
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10,
-  message: { error: 'Too many login attempts. Try again in 15 minutes.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+const loginLimiter = createLoginLimiter();
 
 /**
  * POST /api/auth/register

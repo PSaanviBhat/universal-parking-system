@@ -3,7 +3,7 @@ import { prisma } from '../utils/prisma';
 import QRCode from 'qrcode';
 import { v4 as uuidv4 } from 'uuid';
 import { FacilityType, GateType, SlotStatus, SessionStatus } from '@prisma/client';
-import { adminAuthGuard } from '../middleware/auth';
+import { adminAuthGuard, authGuard } from '../middleware/auth';
 import { startOfToday } from '../services/billing';
 
 export const adminRouter = Router();
@@ -81,7 +81,7 @@ adminRouter.post('/facilities', adminAuthGuard, async (req: Request, res: Respon
  * GET /api/admin/facilities
  * Lists all registered facilities with counts of levels, gates, and slots.
  */
-adminRouter.get('/facilities', async (_req: Request, res: Response): Promise<void> => {
+adminRouter.get('/facilities', adminAuthGuard, async (_req: Request, res: Response): Promise<void> => {
   try {
     const facilities = await prisma.parkingFacility.findMany({
       include: {
@@ -118,7 +118,7 @@ adminRouter.get('/facilities', async (_req: Request, res: Response): Promise<voi
  * GET /api/admin/facilities/:id
  * Retrieves full facility hierarchy: levels, slots, and gates.
  */
-adminRouter.get('/facilities/:id', async (req: Request, res: Response): Promise<void> => {
+adminRouter.get('/facilities/:id', adminAuthGuard, async (req: Request, res: Response): Promise<void> => {
   try {
     const facilityId = String(req.params.id);
 
@@ -290,7 +290,7 @@ adminRouter.post('/facilities/:id/gates', adminAuthGuard, async (req: Request, r
  * Generates and returns a printable QR code image (PNG) or Data URI for a gate.
  * Query param: ?format=image (default returns PNG image) or ?format=json (Data URI)
  */
-adminRouter.get('/gates/:id/qr', async (req: Request, res: Response): Promise<void> => {
+adminRouter.get('/gates/:id/qr', adminAuthGuard, async (req: Request, res: Response): Promise<void> => {
   try {
     const gateId = String(req.params.id);
     const format = String(req.query.format || 'image').toLowerCase();
@@ -352,7 +352,7 @@ adminRouter.get('/gates/:id/qr', async (req: Request, res: Response): Promise<vo
  * Validates a scanned QR code payload and returns gate & facility status.
  * Used by mobile scanners to verify gate authenticity before initiating entry or exit.
  */
-adminRouter.post('/gates/validate-qr', async (req: Request, res: Response): Promise<void> => {
+adminRouter.post('/gates/validate-qr', authGuard, async (req: Request, res: Response): Promise<void> => {
   try {
     const { qrCodeData } = req.body;
 
@@ -408,7 +408,7 @@ adminRouter.post('/gates/validate-qr', async (req: Request, res: Response): Prom
  * Returns high-level platform stats:
  * totalRevenue, todayRevenue, totalSessions, todayExits
  */
-adminRouter.get('/stats', async (_req: Request, res: Response): Promise<void> => {
+adminRouter.get('/stats', adminAuthGuard, async (_req: Request, res: Response): Promise<void> => {
   try {
     const today = startOfToday();
 

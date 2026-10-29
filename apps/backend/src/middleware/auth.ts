@@ -92,6 +92,74 @@ export const operatorAuthGuard = (
   }
 };
 
+function bearerToken(req: Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  return authHeader.split(' ')[1] || null;
+}
+
+/** Verifies a staff token: an operator token first, then an admin token. */
+export function verifyStaffToken(
+  token: string
+): { operator: OperatorJwtPayload } | { admin: AdminJwtPayload } | null {
+  const operatorSecret = process.env.OPERATOR_JWT_SECRET;
+  const adminSecret = process.env.ADMIN_JWT_SECRET;
+  try {
+    if (operatorSecret) {
+      const decoded = jwt.verify(token, operatorSecret) as OperatorJwtPayload;
+      if (decoded.role === 'operator' && decoded.facilityId) return { operator: decoded };
+    }
+  } catch {
+    /* not an operator token */
+  }
+  try {
+    if (adminSecret) {
+      const decoded = jwt.verify(token, adminSecret) as AdminJwtPayload;
+      if (decoded.role === 'admin') return { admin: decoded };
+    }
+  } catch {
+    /* not an admin token */
+  }
+  return null;
+}
+
+/**
+ * Accepts an operator OR an admin token. Operators are limited to their own
+ * facility (see requireFacilityAccess / canAccessFacility); admins see every facility.
+ */
+export const staffAuthGuard = (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+  const token = bearerToken(req);
+  const staff = token ? verifyStaffToken(token) : null;
+  if (!staff) {
+    res.status(401).json({
+      success: false,
+      message: 'Invalid or expired operator authentication token.',
+    });
+    return;
+  }
+  if ('operator' in staff) req.operator = staff.operator;
+  else req.admin = staff.admin;
+  next();
+};
+
+export function canAccessFacility(req: AuthenticatedRequest, facilityId: string): boolean {
+  if (req.admin) return true;
+  return Boolean(req.operator && req.operator.facilityId === facilityId);
+}
+
+/** Rejects requests whose :facilityId route param is not the operator's own facility. */
+export const requireFacilityAccess = (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): void => {
+  if (!canAccessFacility(req, String(req.params.facilityId))) {
+    res.status(403).json({ success: false, message: 'You do not have access to this facility.' });
+    return;
+  }
+  next();
+};
+
 export const adminAuthGuard = (
   req: AuthenticatedRequest,
   res: Response,

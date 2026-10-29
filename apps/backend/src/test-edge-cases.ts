@@ -19,6 +19,7 @@
  */
 
 import http from 'http';
+import { operatorHeaders } from './test-helpers';
 import { app, httpServer } from '../src/index';
 import { prisma } from '../src/utils/prisma';
 import { GateType, SlotStatus, FacilityType } from '@prisma/client';
@@ -209,12 +210,12 @@ async function runTests() {
       {
         path: `/api/operator/sessions/${alphaSessionId}/resolve`,
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: operatorHeaders(mall!.id),
       },
       { action: 'FORCE_CLOSE', resolutionNote: 'Driver lost phone at mall, verified by security desk' }
     );
 
-    if (forceExitRes.statusCode === 200 && forceExitRes.data.data?.closed?.status === 'COMPLETED') {
+    if (forceExitRes.statusCode === 200 && forceExitRes.data.data?.session?.status === 'COMPLETED') {
       console.log('   ✅ Operator successfully force-closed session and released barrier for user without phone.');
     } else {
       throw new Error(`Lost phone resolution failed: ${JSON.stringify(forceExitRes.data)}`);

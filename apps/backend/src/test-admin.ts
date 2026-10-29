@@ -11,6 +11,7 @@
  */
 
 import http from 'http';
+import { adminHeaders,userHeaders } from './test-helpers';
 import { app, httpServer } from '../src/index';
 
 let server: http.Server;
@@ -66,7 +67,7 @@ async function runTests() {
     // Test 1: Create Facility
     console.log('1️⃣ Creating a new parking facility...');
     const facRes = await makeRequest(
-      { path: '/api/admin/facilities', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      { path: '/api/admin/facilities', method: 'POST', headers: adminHeaders() },
       {
         name: 'Nexus Grand Mall',
         type: 'MALL',
@@ -86,7 +87,7 @@ async function runTests() {
     // Test 2: Add Level
     console.log('\n2️⃣ Adding Level Basement 1 (B1)...');
     const levelRes = await makeRequest(
-      { path: `/api/admin/facilities/${facilityId}/levels`, method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      { path: `/api/admin/facilities/${facilityId}/levels`, method: 'POST', headers: adminHeaders() },
       { levelCode: 'B1', displayName: 'Basement 1', totalSlots: 15 }
     );
 
@@ -101,7 +102,7 @@ async function runTests() {
     // Test 3: Bulk create slots
     console.log('\n3️⃣ Bulk provisioning 10 slots on Level B1...');
     const slotRes = await makeRequest(
-      { path: `/api/admin/levels/${levelId}/slots`, method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      { path: `/api/admin/levels/${levelId}/slots`, method: 'POST', headers: adminHeaders() },
       { count: 10, prefix: 'B1', startingNumber: 1 }
     );
 
@@ -114,7 +115,7 @@ async function runTests() {
     // Test 4: Create Entry Gate with QR payload
     console.log('\n4️⃣ Creating Entry Gate with unique QR code payload...');
     const gateRes = await makeRequest(
-      { path: `/api/admin/facilities/${facilityId}/gates`, method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      { path: `/api/admin/facilities/${facilityId}/gates`, method: 'POST', headers: adminHeaders() },
       { gateName: 'East Gate Entry', gateType: 'ENTRY' }
     );
 
@@ -132,6 +133,7 @@ async function runTests() {
     const qrImageRes = await makeRequest({
       path: `/api/admin/gates/${entryGate.id}/qr?format=image`,
       method: 'GET',
+      headers: adminHeaders(),
     });
 
     if (
@@ -148,7 +150,7 @@ async function runTests() {
     // Test 6: Validate scanned QR code payload
     console.log('\n6️⃣ Validating scanned QR payload for entry gate...');
     const validQrRes = await makeRequest(
-      { path: '/api/admin/gates/validate-qr', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      { path: '/api/admin/gates/validate-qr', method: 'POST', headers: userHeaders() },
       { qrCodeData: entryGate.qrCodeData }
     );
 
@@ -166,7 +168,7 @@ async function runTests() {
     // Test 7: Reject invalid QR code format
     console.log('\n7️⃣ Testing rejection of malformed / tampered QR payload...');
     const invalidQrRes = await makeRequest(
-      { path: '/api/admin/gates/validate-qr', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      { path: '/api/admin/gates/validate-qr', method: 'POST', headers: userHeaders() },
       { qrCodeData: 'INVALID_RANDOM_BARCODE_STRING' }
     );
 

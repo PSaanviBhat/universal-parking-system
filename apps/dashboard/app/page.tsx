@@ -99,8 +99,18 @@ export default function OperatorDashboard() {
         const res = await fetch(`${API_BASE}/api/facilities`);
         const json = await res.json();
         if (json.success && json.data.length > 0) {
-          setFacilities(json.data);
-          setSelectedFacilityId(json.data[0].id);
+          // Operators are scoped to their own facility; admins can switch between all of them.
+          const role = localStorage.getItem('parking_role');
+          let ownFacilityId: string | undefined;
+          try {
+            ownFacilityId = JSON.parse(localStorage.getItem('parking_user') || '{}').facilityId;
+          } catch (_) {}
+          const visible =
+            role === 'operator' && ownFacilityId
+              ? json.data.filter((f: any) => f.id === ownFacilityId)
+              : json.data;
+          setFacilities(visible);
+          if (visible.length > 0) setSelectedFacilityId(visible[0].id);
         }
       } catch (err) {
         console.error('Failed to load facilities:', err);
@@ -114,14 +124,22 @@ export default function OperatorDashboard() {
 
   // 2. Setup Socket.io connection & room join
   useEffect(() => {
-    if (!selectedFacilityId) return;
+    if (!selectedFacilityId || !token) return;
 
-    const newSocket = io(API_BASE);
+    const newSocket = io(API_BASE, { auth: { token } });
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
       console.log('Connected to operator websocket server');
       newSocket.emit('join:facility', selectedFacilityId);
+    });
+
+    newSocket.on('connect_error', (err) => {
+      console.error('Live updates unavailable:', err.message);
+    });
+
+    newSocket.on('session:resolved', () => {
+      refreshData(selectedFacilityId);
     });
 
     newSocket.on('session:created', (data) => {
@@ -145,7 +163,7 @@ export default function OperatorDashboard() {
     return () => {
       newSocket.disconnect();
     };
-  }, [selectedFacilityId, API_BASE]);
+  }, [selectedFacilityId, API_BASE, token]);
 
   // 3. Refresh Dashboard Data
   async function refreshData(facId: string) {
@@ -167,6 +185,10 @@ export default function OperatorDashboard() {
 
       if (resStats.status === 401 || resSessions.status === 401 || resSlots.status === 401) {
         handleLogout();
+        return;
+      }
+      if (resStats.status === 403) {
+        showNotice('You do not have access to this facility.');
         return;
       }
 
@@ -220,8 +242,10 @@ export default function OperatorDashboard() {
       const json = await res.json();
       if (json.success) {
         showNotice(action === 'FORCE_CLOSE' ? 'Session force-closed and slot freed!' : 'Session flagged as DISPUTED.');
-        refreshData(selectedFacilityId);
+      } else {
+        showNotice(json.message || 'Could not resolve session.');
       }
+      refreshData(selectedFacilityId);
     } catch (err) {
       console.error('Resolve error:', err);
     }
