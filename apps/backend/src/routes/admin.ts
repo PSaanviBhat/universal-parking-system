@@ -2,11 +2,27 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/prisma';
 import QRCode from 'qrcode';
 import { v4 as uuidv4 } from 'uuid';
-import { FacilityType, GateType, SlotStatus, SessionStatus } from '@prisma/client';
+import bcrypt from 'bcryptjs';
+import { FacilityType, GateType, Prisma, SlotStatus, SessionStatus } from '@prisma/client';
 import { adminAuthGuard, authGuard } from '../middleware/auth';
 import { startOfToday } from '../services/billing';
 
 export const adminRouter = Router();
+
+/** Maps unique-constraint / missing-parent errors to clean 409/404 responses. */
+function sendKnownPrismaError(error: unknown, res: Response, what: string): boolean {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === 'P2002') {
+      res.status(409).json({ success: false, message: `${what} already exists.` });
+      return true;
+    }
+    if (error.code === 'P2003' || error.code === 'P2025') {
+      res.status(404).json({ success: false, message: 'Facility or level not found.' });
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * QR Code Format Standard:
@@ -176,6 +192,7 @@ adminRouter.post('/facilities/:id/levels', adminAuthGuard, async (req: Request, 
 
     res.status(201).json({ success: true, message: 'Level created successfully.', data: level });
   } catch (error) {
+    if (sendKnownPrismaError(error, res, 'A level with this code in this facility')) return;
     console.error('[Create Level Error]', error);
     res.status(500).json({ success: false, message: 'Failed to create level.' });
   }
@@ -280,6 +297,7 @@ adminRouter.post('/facilities/:id/gates', adminAuthGuard, async (req: Request, r
       data: gate,
     });
   } catch (error) {
+    if (sendKnownPrismaError(error, res, 'This gate')) return;
     console.error('[Create Gate Error]', error);
     res.status(500).json({ success: false, message: 'Failed to create gate.' });
   }
@@ -451,3 +469,108 @@ adminRouter.get('/stats', adminAuthGuard, async (_req: Request, res: Response): 
   }
 });
 
+
+// ─── OPERATOR ACCOUNTS ────────────────────────────────────────────────────────
+
+const operatorPublicSelect = {
+  id: true,
+  username: true,
+  facilityId: true,
+  isActive: true,
+  createdAt: true,
+  facility: { select: { name: true } },
+} satisfies Prisma.OperatorSelect;
+
+/**
+ * GET /api/admin/operators
+ * Lists operator accounts (never returns password hashes).
+ */
+adminRouter.get('/operators', adminAuthGuard, async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const operators = await prisma.operator.findMany({
+      select: operatorPublicSelect,
+      orderBy: { createdAt: 'desc' },
+    });
+    res.status(200).json({ success: true, data: operators });
+  } catch (error) {
+    console.error('[List Operators Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to retrieve operators.' });
+  }
+});
+
+/**
+ * POST /api/admin/operators
+ * Body: { username, password, facilityId }
+ * Creates an operator account scoped to one facility.
+ */
+adminRouter.post('/operators', adminAuthGuard, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const username = String(req.body.username || '').trim().toLowerCase();
+    const password = String(req.body.password || '');
+    const facilityId = String(req.body.facilityId || '');
+
+    if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+      res.status(400).json({
+        success: false,
+        message: 'Username must be 3–32 characters: letters, numbers, dot, dash or underscore.',
+      });
+      return;
+    }
+    if (password.length < 10) {
+      res.status(400).json({ success: false, message: 'Password must be at least 10 characters.' });
+      return;
+    }
+    if (!facilityId) {
+      res.status(400).json({ success: false, message: 'facilityId is required.' });
+      return;
+    }
+
+    const operator = await prisma.operator.create({
+      data: { username, passwordHash: await bcrypt.hash(password, 10), facilityId },
+      select: operatorPublicSelect,
+    });
+    res.status(201).json({ success: true, message: 'Operator account created.', data: operator });
+  } catch (error) {
+    if (sendKnownPrismaError(error, res, 'An operator with this username')) return;
+    console.error('[Create Operator Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to create operator.' });
+  }
+});
+
+/**
+ * PATCH /api/admin/operators/:id
+ * Body: { isActive?, password? } — deactivate/reactivate an operator or reset their password.
+ * Deactivated operators cannot log in; tokens already issued expire within 8 hours.
+ */
+adminRouter.patch('/operators/:id', adminAuthGuard, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const data: Prisma.OperatorUpdateInput = {};
+    if (typeof req.body.isActive === 'boolean') data.isActive = req.body.isActive;
+    if (req.body.password !== undefined) {
+      const password = String(req.body.password);
+      if (password.length < 10) {
+        res.status(400).json({ success: false, message: 'Password must be at least 10 characters.' });
+        return;
+      }
+      data.passwordHash = await bcrypt.hash(password, 10);
+    }
+    if (Object.keys(data).length === 0) {
+      res.status(400).json({ success: false, message: 'Nothing to update (isActive or password).' });
+      return;
+    }
+
+    const operator = await prisma.operator.update({
+      where: { id: String(req.params.id) },
+      data,
+      select: operatorPublicSelect,
+    });
+    res.status(200).json({ success: true, message: 'Operator updated.', data: operator });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      res.status(404).json({ success: false, message: 'Operator not found.' });
+      return;
+    }
+    console.error('[Update Operator Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to update operator.' });
+  }
+});

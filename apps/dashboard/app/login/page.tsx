@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { API_BASE, saveSession } from '../lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -10,8 +11,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
   const handleRoleChange = (newRole: 'operator' | 'admin') => {
     setRole(newRole);
@@ -43,15 +42,8 @@ export default function LoginPage() {
         return;
       }
 
-      localStorage.setItem('parking_token', data.token);
-      localStorage.setItem('parking_role', role);
-      if (data.operator) {
-        localStorage.setItem('parking_user', JSON.stringify(data.operator));
-      } else if (data.admin) {
-        localStorage.setItem('parking_user', JSON.stringify(data.admin));
-      }
-
-      router.push('/');
+      saveSession({ token: data.token, role, user: data.operator ?? data.admin });
+      router.push(role === 'admin' ? '/admin' : '/');
     } catch (err: any) {
       console.error('Login error:', err);
       setError('Unable to connect to backend server. Make sure it is running on ' + API_BASE);

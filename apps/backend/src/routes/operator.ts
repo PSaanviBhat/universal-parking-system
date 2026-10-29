@@ -264,6 +264,52 @@ operatorRouter.get('/slots/:facilityId', requireFacilityAccess, async (req: Requ
 });
 
 /**
+ * PATCH /api/operator/slots/:slotId
+ * Body: { isActive: boolean }
+ * Reopens a slot that was flagged as obstructed (reassignment deactivates it), or
+ * takes a free slot out of service. An occupied slot cannot be deactivated.
+ */
+operatorRouter.patch('/slots/:slotId', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    if (typeof req.body.isActive !== 'boolean') {
+      res.status(400).json({ success: false, message: 'isActive (true/false) is required.' });
+      return;
+    }
+    const slot = await prisma.parkingSlot.findUnique({ where: { id: String(req.params.slotId) } });
+    if (!slot || !canAccessFacility(req, slot.facilityId)) {
+      res.status(404).json({ success: false, message: 'Slot not found.' });
+      return;
+    }
+
+    const updated = await prisma.parkingSlot.updateMany({
+      where: {
+        id: slot.id,
+        // Never take an occupied slot out of service
+        ...(req.body.isActive ? {} : { status: SlotStatus.AVAILABLE }),
+      },
+      data: { isActive: req.body.isActive },
+    });
+    if (updated.count === 0) {
+      res.status(409).json({ success: false, message: 'The slot is occupied. Wait until the vehicle exits.' });
+      return;
+    }
+
+    const fresh = await prisma.parkingSlot.findUniqueOrThrow({ where: { id: slot.id }, include: { level: true } });
+    io.to(`facility:${slot.facilityId}`).emit('slot:updated', {
+      slotId: fresh.id,
+      slotNumber: fresh.slotNumber,
+      status: fresh.status,
+      levelCode: fresh.level.levelCode,
+      isActive: fresh.isActive,
+    });
+    res.status(200).json({ success: true, message: fresh.isActive ? 'Slot reopened.' : 'Slot taken out of service.', data: fresh });
+  } catch (error) {
+    console.error('[Operator Slot Update Error]', error);
+    res.status(500).json({ success: false, message: 'Failed to update slot.' });
+  }
+});
+
+/**
  * GET /api/operator/vehicles/search?plate=KA01AB1234[&facilityId=]
  * Lost-phone / forgotten-session lookup: finds vehicles by (partial) plate and
  * returns their ACTIVE session in the operator's facility, so staff can verify
@@ -285,8 +331,15 @@ operatorRouter.get('/vehicles/search', async (req: AuthenticatedRequest, res: Re
       ? String(req.query.facilityId)
       : undefined;
 
+    // Operators only see vehicles currently parked in their own facility, so they can't
+    // look up other drivers' names and phone numbers by plate. Admins can search everything.
     const vehicles = await prisma.vehicle.findMany({
-      where: { licensePlate: { contains: plate } },
+      where: {
+        licensePlate: { contains: plate },
+        ...(req.operator
+          ? { parkingSessions: { some: { status: SessionStatus.ACTIVE, facilityId: req.operator.facilityId } } }
+          : {}),
+      },
       take: 10,
       include: {
         user: { select: { name: true, phone: true } },
