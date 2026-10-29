@@ -88,11 +88,18 @@ async function runTests() {
     );
     const tokenA = regResA.data.data.token;
 
-    // Top up ₹100 for User A
-    await makeRequest(
-      { path: '/api/wallet/topup', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenA}` } },
+    // Top up ₹100 for User A (simulated order; needs ALLOW_SIMULATED_PAYMENTS=true)
+    const orderRes = await makeRequest(
+      { path: '/api/wallet/create-order', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenA}` } },
       { amount: 100 }
     );
+    const topupRes = await makeRequest(
+      { path: '/api/wallet/topup', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenA}` } },
+      { razorpayOrderId: orderRes.data.data?.orderId }
+    );
+    if (topupRes.statusCode !== 200) {
+      throw new Error(`Top-up failed: ${JSON.stringify(topupRes.data)}`);
+    }
 
     // Register Car A
     const carAPlate = `KA01P7${Math.floor(1000 + Math.random() * 9000)}`;

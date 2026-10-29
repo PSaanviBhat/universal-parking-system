@@ -83,6 +83,7 @@ enum TransactionType {
   DEBT_REPAYMENT
   AUTOPAY
   FINE
+  REFUND
 }
 
 // ─── PAYMENT ORDERS (wallet top-ups) ──────────────────────────────────────────
@@ -229,6 +230,7 @@ model ParkingSession {
   totalFee         Decimal?        @db.Decimal(10, 2)
   status           SessionStatus   @default(ACTIVE)
   paymentStatus    PaymentStatus   @default(PENDING)
+  resolutionNote   String?         // Operator note for force-close / dispute handling
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 

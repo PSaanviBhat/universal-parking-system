@@ -328,6 +328,17 @@ stateDiagram-v2
     RESERVED_OCCUPIED --> AVAILABLE : Slot reassigned (system error → new slot given)
 ```
 
+> **Mapping to prerequisites §12** (`AVAILABLE → RESERVED/ASSIGNED → OCCUPIED → RELEASED`):
+> RESERVED/ASSIGNED and OCCUPIED are deliberately merged into `RESERVED_OCCUPIED`, because billing
+> starts at assignment and the system has no sensor to tell "driving to the slot" from "parked".
+> RELEASED is the instant the exit (or force-close/dispute) transaction sets the slot back to
+> `AVAILABLE`; it is not stored. Slot release only happens if the slot is still held by that
+> session (`currentSessionId` match), so a slot can never be both free and assigned.
+>
+> Vehicles expose a derived `parkingState` from `GET /api/vehicles`: `NOT_PARKED` (never parked),
+> `PARKED` (has the ACTIVE session) and `EXITED` (latest session closed). ENTERING and EXITING exist
+> only inside the atomic entry/exit transactions.
+
 #### Wallet State Machine
 ```mermaid
 stateDiagram-v2

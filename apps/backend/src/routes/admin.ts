@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import { v4 as uuidv4 } from 'uuid';
 import { FacilityType, GateType, SlotStatus, SessionStatus } from '@prisma/client';
 import { adminAuthGuard } from '../middleware/auth';
+import { startOfToday } from '../services/billing';
 
 export const adminRouter = Router();
 
@@ -409,8 +410,7 @@ adminRouter.post('/gates/validate-qr', async (req: Request, res: Response): Prom
  */
 adminRouter.get('/stats', async (_req: Request, res: Response): Promise<void> => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = startOfToday();
 
     const [totalRevenueAgg, todayRevenueAgg, totalSessions, todayExits] = await Promise.all([
       prisma.walletTransaction.aggregate({

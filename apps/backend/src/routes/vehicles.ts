@@ -111,8 +111,11 @@ vehicleRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise
     const vehicles = await prisma.vehicle.findMany({
       where: { userId },
       include: {
+        // Latest session only: a vehicle can have at most one ACTIVE session,
+        // and it is always its most recent one.
         parkingSessions: {
-          where: { status: 'ACTIVE' },
+          orderBy: { entryTime: 'desc' },
+          take: 1,
           select: {
             id: true,
             status: true,
@@ -141,12 +144,18 @@ vehicleRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise
     });
 
     const formatted = vehicles.map((v) => {
-      const activeSession = v.parkingSessions[0] || null;
+      const latestSession = v.parkingSessions[0] || null;
+      const activeSession = latestSession?.status === 'ACTIVE' ? latestSession : null;
+      // NOT_PARKED -> PARKED -> EXITED (prerequisites §12). ENTERING/EXITING are the
+      // instants inside the entry/exit transactions and are never persisted.
+      const parkingState = activeSession ? 'PARKED' : latestSession ? 'EXITED' : 'NOT_PARKED';
       return {
         id: v.id,
         licensePlate: v.licensePlate,
         nickname: v.nickname,
         createdAt: v.createdAt,
+        parkingState,
+        activeSessionId: activeSession?.id ?? null,
         isParked: Boolean(activeSession),
         activeSession: activeSession
           ? {

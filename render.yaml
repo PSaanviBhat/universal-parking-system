@@ -39,3 +39,7 @@ services:
         value: "35"
       - key: DEBT_REPAYMENT_WINDOW_HOURS
         value: "48"
+      - key: STALE_SESSION_HOURS
+        value: "24"
+      - key: FACILITY_TIMEZONE
+        value: Asia/Kolkata

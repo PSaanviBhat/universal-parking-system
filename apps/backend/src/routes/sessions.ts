@@ -4,6 +4,7 @@ import { authGuard, AuthenticatedRequest } from '../middleware/auth';
 import { parseGateQrPayload } from './admin';
 import { io } from '../index';
 import { SlotStatus, SessionStatus, PaymentStatus } from '@prisma/client';
+import { calculateFee, settleSessionCharge, SESSION_ALREADY_CLOSED } from '../services/billing';
 
 export const sessionRouter = Router();
 
@@ -223,10 +224,25 @@ sessionRouter.post('/entry', async (req: AuthenticatedRequest, res: Response): P
       levelCode: sessionResult.slot.level.levelCode,
     });
 
+    // Entry is never blocked for balance (48h debt model), but the driver is warned
+    // up front when the wallet cannot cover the 1-hour minimum charge.
+    const hourlyRate = Number(sessionResult.session.feeRateSnapshot);
+    const wallet = await prisma.wallet.findUnique({ where: { userId }, select: { balance: true } });
+    const balance = Number(wallet?.balance ?? 0);
+    const walletWarning =
+      balance < 0
+        ? `You have an outstanding balance of ₹${Math.abs(balance).toFixed(2)}. Please top up to clear it.`
+        : balance < hourlyRate
+        ? `Your wallet balance (₹${balance.toFixed(2)}) is below the 1-hour minimum charge of ₹${hourlyRate.toFixed(2)}. Top up before you exit to avoid going into debt.`
+        : null;
+
     res.status(201).json({
       success: true,
       message: 'Parking session started. Slot allocated successfully.',
+      walletWarning,
       data: {
+        walletBalance: balance,
+        walletWarning,
         session: {
           id: sessionResult.session.id,
           entryTime: sessionResult.session.entryTime,
@@ -320,11 +336,8 @@ sessionRouter.get('/active', async (req: AuthenticatedRequest, res: Response): P
     const now = new Date();
 
     const formattedSessions = activeSessions.map((s) => {
-      const durationMs = now.getTime() - new Date(s.entryTime).getTime();
-      const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
-      const durationHours = durationMinutes / 60;
       const hourlyRate = Number(s.feeRateSnapshot);
-      const estimatedFee = Math.max(hourlyRate, Math.round(durationHours * hourlyRate * 100) / 100);
+      const { durationMinutes, fee: estimatedFee } = calculateFee(s.entryTime, now, hourlyRate);
 
       return {
         sessionId: s.id,
@@ -447,7 +460,8 @@ sessionRouter.post('/exit', async (req: AuthenticatedRequest, res: Response): Pr
     if (!activeSession) {
       res.status(404).json({
         success: false,
-        message: 'No active parking session found for this vehicle. Cannot perform exit.',
+        message:
+          'No active parking session found for this vehicle. It may have already exited — no charge was made.',
       });
       return;
     }
@@ -462,96 +476,31 @@ sessionRouter.post('/exit', async (req: AuthenticatedRequest, res: Response): Pr
     }
 
     const exitTime = new Date();
-    const entryTime = new Date(activeSession.entryTime);
-    const durationMs = exitTime.getTime() - entryTime.getTime();
-    const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
-    const durationHours = durationMinutes / 60;
-    const hourlyRate = Number(activeSession.feeRateSnapshot);
 
-    // Calculate fee: at least 1-hour minimum charge or calculated duration
-    const totalFee = Math.max(hourlyRate, Math.round(durationHours * hourlyRate * 100) / 100);
-
-    // 3 & 4. Atomic Transaction: Settle Payment from Wallet, Update Session, and Free Slot
-    const result = await prisma.$transaction(async (tx) => {
-      const userWallet = await tx.wallet.findUnique({
-        where: { userId },
-      });
-
-      if (!userWallet) {
-        throw new Error('User wallet not found');
-      }
-
-      const prevBalance = Number(userWallet.balance);
-      const newBalance = prevBalance - totalFee;
-      const isDebt = newBalance < 0;
-
-      let paymentStatus: PaymentStatus = PaymentStatus.PAID;
-      let debtDeadline: Date | null = userWallet.debtDeadline;
-      let debtCreatedAt: Date | null = userWallet.debtCreatedAt;
-
-      if (isDebt) {
-        paymentStatus = PaymentStatus.DEBT;
-        if (!debtCreatedAt) {
-          debtCreatedAt = exitTime;
-          debtDeadline = new Date(exitTime.getTime() + 48 * 60 * 60 * 1000); // +48 hours
-        }
-      }
-
-      // Update Wallet
-      const updatedWallet = await tx.wallet.update({
-        where: { id: userWallet.id },
-        data: {
-          balance: newBalance,
-          debtCreatedAt,
-          debtDeadline,
-        },
-      });
-
-      // Update Parking Session to COMPLETED
-      const closedSession = await tx.parkingSession.update({
-        where: { id: activeSession.id },
-        data: {
-          exitGateId: exitGate.id,
+    // 3 & 4. Atomic settlement: claim the ACTIVE session, debit the wallet, free the slot.
+    // A concurrent duplicate exit fails the claim and is never charged.
+    let result;
+    try {
+      result = await prisma.$transaction((tx) =>
+        settleSessionCharge(tx, {
+          session: activeSession,
           exitTime,
-          durationMinutes,
-          totalFee,
-          status: SessionStatus.COMPLETED,
-          paymentStatus,
-        },
-      });
-
-      // Record Wallet Transaction
-      const transaction = await tx.walletTransaction.create({
-        data: {
-          walletId: userWallet.id,
-          sessionId: closedSession.id,
-          type: 'PARKING_CHARGE',
-          amount: totalFee,
-          description: `Parking fee for ${activeSession.vehicle.licensePlate} at ${activeSession.facility.name} (${durationMinutes} mins)`,
-        },
-      });
-
-      // Release Slot back to AVAILABLE
-      const releasedSlot = await tx.parkingSlot.update({
-        where: { id: activeSession.slotId },
-        data: {
-          status: SlotStatus.AVAILABLE,
-          currentSessionId: null,
-        },
-        include: { level: true },
-      });
-
-      return {
-        closedSession,
-        updatedWallet,
-        releasedSlot,
-        transaction,
-        isDebt,
-        prevBalance,
-        newBalance,
-        debtDeadline,
-      };
-    });
+          exitGateId: exitGate.id,
+          description: (mins) =>
+            `Parking fee for ${activeSession.vehicle.licensePlate} at ${activeSession.facility.name} (${mins} mins)`,
+        })
+      );
+    } catch (err) {
+      if (err instanceof Error && err.message === SESSION_ALREADY_CLOSED) {
+        res.status(409).json({
+          success: false,
+          message: 'This parking session has already been closed. You were not charged again.',
+        });
+        return;
+      }
+      throw err;
+    }
+    const { durationMinutes, totalFee } = result;
 
     // 5. Broadcast real-time events via Socket.io
     io.to(`facility:${exitGate.facilityId}`).emit('session:completed', {
@@ -749,6 +698,18 @@ sessionRouter.post('/:id/reassign', async (req: AuthenticatedRequest, res: Respo
         return null;
       }
 
+      // Detach the session from the old slot first: currentSessionId is unique, so the
+      // new slot cannot point at this session while the old one still does.
+      // The old slot is deactivated and flagged for operator inspection.
+      await tx.parkingSlot.update({
+        where: { id: oldSlotId },
+        data: {
+          status: SlotStatus.AVAILABLE,
+          currentSessionId: null,
+          isActive: false,
+        },
+      });
+
       // Optimistic lock: attempt to claim the slot
       const updateResult = await tx.parkingSlot.updateMany({
         where: {
@@ -763,18 +724,9 @@ sessionRouter.post('/:id/reassign', async (req: AuthenticatedRequest, res: Respo
       });
 
       if (updateResult.count === 0) {
-        throw new Error('Slot no longer available');
+        // Rolls back the old-slot release above as well
+        throw new Error('SLOT_CONCURRENCY_CONFLICT');
       }
-
-      // Mark old slot as inactive or available (flagged for operator inspection)
-      await tx.parkingSlot.update({
-        where: { id: oldSlotId },
-        data: {
-          status: SlotStatus.AVAILABLE,
-          currentSessionId: null,
-          isActive: false, // Flagged for operator inspection
-        },
-      });
 
       // Update session with new slot ID
       const updatedSession = await tx.parkingSession.update({
@@ -831,6 +783,13 @@ sessionRouter.post('/:id/reassign', async (req: AuthenticatedRequest, res: Respo
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.message === 'SLOT_CONCURRENCY_CONFLICT') {
+      res.status(409).json({
+        success: false,
+        message: 'The alternative slot was just taken by another vehicle. Please try again.',
+      });
+      return;
+    }
     console.error('[Slot Reassignment Error]', error);
     res.status(500).json({
       success: false,
@@ -923,12 +882,9 @@ sessionRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Prom
     let durationMinutes = session.durationMinutes;
 
     if (session.status === 'ACTIVE') {
-      const now = new Date();
-      const durationMs = now.getTime() - new Date(session.entryTime).getTime();
-      durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
-      const durationHours = durationMinutes / 60;
-      const rate = Number(session.feeRateSnapshot);
-      runningFee = Math.max(rate, Math.round(durationHours * rate * 100) / 100);
+      const live = calculateFee(session.entryTime, new Date(), Number(session.feeRateSnapshot));
+      durationMinutes = live.durationMinutes;
+      runningFee = live.fee;
     }
 
     res.status(200).json({
