@@ -6,35 +6,114 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-validate:
-    name: Build & Validate Monorepo
+  backend:
+    name: Backend — build, migrate, test
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: parking
+          POSTGRES_PASSWORD: parking
+          POSTGRES_DB: parking_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U parking"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
-      - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+    env:
+      DATABASE_URL: postgresql://parking:parking@localhost:5432/parking_ci
+      # Throwaway values for the CI database only
+      JWT_SECRET: ci-user-secret
+      OPERATOR_JWT_SECRET: ci-operator-secret
+      ADMIN_JWT_SECRET: ci-admin-secret
+      NODE_ENV: test
+      ALLOW_SIMULATED_PAYMENTS: 'true'
+      SEED_ADMIN_PASSWORD: ci-admin-password
+      SEED_OPERATOR_PASSWORD: ci-operator-password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: npm
 
-      - name: Install Monorepo Dependencies
-        run: npm ci || npm install
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Generate Prisma Client
-        run: npm run db:generate --workspace=apps/backend
-        env:
-          DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
-
-      - name: Typecheck & Build Backend
+      - name: Typecheck & build backend
         run: npm run build:backend
-        env:
-          DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
 
-      - name: Build Next.js Operator Dashboard
+      - name: Apply migrations
+        run: npm run db:deploy --workspace=apps/backend
+
+      # Fails if schema.prisma has changes with no migration. The shadow database is
+      # wiped by Prisma, so it must be separate from DATABASE_URL.
+      - name: Check schema matches migrations
+        run: |
+          PGPASSWORD=parking psql -h localhost -U parking -d parking_ci -c 'CREATE DATABASE parking_shadow'
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url postgresql://parking:parking@localhost:5432/parking_shadow \
+            --exit-code
+
+      - name: Seed
+        run: npm run db:seed --workspace=apps/backend
+
+      - name: Run backend test suites
+        run: npm test --workspace=apps/backend
+
+  dashboard:
+    name: Dashboard — build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Next.js dashboard
         run: npm run build:dashboard
         env:
-          NEXT_PUBLIC_API_URL: "http://localhost:5000"
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+
+  mobile:
+    name: Mobile — analyze & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.24.4
+          channel: stable
+          cache: true
+
+      - name: Install packages
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
