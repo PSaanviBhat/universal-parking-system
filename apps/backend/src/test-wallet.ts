@@ -45,6 +45,13 @@ function makeRequest(
   });
 }
 
+/** Simulated order + top-up (needs ALLOW_SIMULATED_PAYMENTS=true). */
+async function simulatedTopup(token: string, amount: number) {
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+  const order = await makeRequest({ path: '/api/wallet/create-order', method: 'POST', headers }, { amount });
+  return makeRequest({ path: '/api/wallet/topup', method: 'POST', headers }, { razorpayOrderId: order.data.data?.orderId });
+}
+
 async function runTests() {
   console.log('🧪 Starting Phase 4 Wallet System Tests...\n');
 
@@ -85,7 +92,7 @@ async function runTests() {
     console.log('\n2️⃣ Testing top-up below minimum limit (e.g. ₹20)...');
     const topupBelowRes = await makeRequest(
       {
-        path: '/api/wallet/topup',
+        path: '/api/wallet/create-order',
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       },
@@ -100,14 +107,7 @@ async function runTests() {
 
     // Test 3: Valid Top-up (₹100)
     console.log('\n3️⃣ Testing valid top-up of ₹100...');
-    const topupValidRes = await makeRequest(
-      {
-        path: '/api/wallet/topup',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      },
-      { amount: 100, razorpayPaymentId: 'pay_test_12345' }
-    );
+    const topupValidRes = await simulatedTopup(token, 100);
 
     if (topupValidRes.statusCode === 200 && topupValidRes.data.data?.newBalance === 100) {
       console.log('   ✅ Wallet balance successfully updated to ₹100.00.');
@@ -164,14 +164,7 @@ async function runTests() {
 
     // Test 6: Repay Debt with Top-up (₹100 topup against ₹60 debt -> +₹40 balance)
     console.log('\n6️⃣ Repaying debt with ₹100 top-up...');
-    const repayRes = await makeRequest(
-      {
-        path: '/api/wallet/topup',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      },
-      { amount: 100, razorpayPaymentId: 'pay_repay_9999' }
-    );
+    const repayRes = await simulatedTopup(token, 100);
 
     if (repayRes.statusCode === 200 && repayRes.data.data?.newBalance === 40 && !repayRes.data.data?.isDebt) {
       console.log('   ✅ Debt cleared! New positive balance: ₹40.00.');

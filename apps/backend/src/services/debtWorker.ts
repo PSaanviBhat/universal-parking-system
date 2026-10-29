@@ -1,142 +1,145 @@
 import { prisma } from '../utils/prisma';
-import { TransactionType } from '@prisma/client';
+import { PaymentStatus, Prisma, TransactionType } from '@prisma/client';
+import { chargeAutopay } from './autopay';
+import { creditWallet, debitWallet } from './billing';
+
+export const DEBT_FINE_AMOUNT = Number(process.env.DEBT_FINE_AMOUNT || 500);
 
 export interface DebtProcessResult {
   walletsChecked: number;
   autopaySucceeded: number;
+  autopayPending: number;
   autopayFailed: number;
   suspendedUsers: string[];
 }
 
-/**
- * Service to process expired wallet debts:
- * Finds all wallets where:
- * - balance < 0 (in debt)
- * - debtDeadline is past due (< now)
- * - User is not already suspended/blacklisted
- *
- * For each expired debt:
- * - Attempts simulated Autopay deduction from linked payment method.
- * - If user has a valid payment method with token:
- *     -> Autopay succeeds, credits wallet, clears debt, records AUTOPAY transaction.
- * - If user has no payment method or autopay payment fails:
- *     -> Enforces strict policy:
- *         1. User account is suspended (isSuspended = true).
- *         2. All user vehicles are blacklisted (isBlacklisted = true).
- *         3. Creates SuspensionRecord with fine (default ₹100 fine).
- *         4. Records FINE audit transaction.
- */
-export async function processExpiredDebts(mockAutopaySuccessRate = 0.5): Promise<DebtProcessResult> {
-  const now = new Date();
-  const expiredWallets = await prisma.wallet.findMany({
-    where: {
-      balance: { lt: 0 },
-      debtDeadline: { lte: now },
-      user: {
-        isSuspended: false,
-      },
-    },
-    include: {
-      user: {
-        include: {
-          vehicles: true,
-          paymentMethods: true,
-        },
-      },
-      linkedPaymentMethod: true,
-    },
-  });
+const expiredDebtWhere = (now: Date): Prisma.WalletWhereInput => ({
+  balance: { lt: 0 },
+  debtDeadline: { lte: now },
+  user: { isSuspended: false },
+});
 
+/**
+ * Processes wallets whose 48h debt window has expired (balance < 0, deadline passed,
+ * user not already suspended):
+ *
+ * - Autopay succeeds -> the debt is credited back (AUTOPAY transaction), the wallet
+ *   returns to 0, the debt window closes and the user's DEBT sessions become PAID.
+ * - Autopay pending  -> DEBT sessions become AUTOPAY_PENDING; retried next run.
+ * - Autopay fails    -> the account is suspended and blacklisted (all vehicles are
+ *   blocked at entry), ONE fine of DEBT_FINE_AMOUNT (default ₹500) is added to the
+ *   wallet debt with a FINE transaction and an account-level SuspensionRecord,
+ *   and the DEBT sessions become FINED.
+ *
+ * Each wallet is handled in its own transaction that first locks the wallet row
+ * (SELECT ... FOR UPDATE) and re-checks the conditions, so two overlapping runs
+ * (e.g. two server instances during a Render deploy) can never charge or fine twice.
+ */
+export async function processExpiredDebts(now = new Date()): Promise<DebtProcessResult> {
   const result: DebtProcessResult = {
-    walletsChecked: expiredWallets.length,
+    walletsChecked: 0,
     autopaySucceeded: 0,
+    autopayPending: 0,
     autopayFailed: 0,
     suspendedUsers: [],
   };
 
-  const DEFAULT_AUTOPAY_FINE = 100.00; // ₹100 fine for default
+  // Cheap early exit: most runs find nothing, so avoid loading relations.
+  const candidates = await prisma.wallet.findMany({
+    where: expiredDebtWhere(now),
+    select: { id: true },
+  });
+  result.walletsChecked = candidates.length;
 
-  for (const wallet of expiredWallets) {
-    const debtAmount = Math.abs(Number(wallet.balance));
-    const user = wallet.user;
-    const paymentMethod = wallet.linkedPaymentMethod || user.paymentMethods[0] || null;
+  for (const { id: walletId } of candidates) {
+    try {
+      const outcome = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Wallet" WHERE id = ${walletId} FOR UPDATE`;
 
-    // Simulate autopay trigger: fails if no payment method or failure triggered
-    const isAutopaySuccess = Boolean(paymentMethod?.razorpayToken) && Math.random() < mockAutopaySuccessRate;
-
-    if (isAutopaySuccess && paymentMethod) {
-      // ─── AUTOPAY SUCCESS ───────────────────────────────────────────────────
-      await prisma.$transaction(async (tx) => {
-        // Clear debt and restore zero balance
-        await tx.wallet.update({
-          where: { id: wallet.id },
-          data: {
-            balance: 0,
-            debtCreatedAt: null,
-            debtDeadline: null,
-          },
-        });
-
-        // Record autopay transaction
-        await tx.walletTransaction.create({
-          data: {
-            walletId: wallet.id,
-            type: TransactionType.AUTOPAY,
-            amount: debtAmount,
-            description: `Autopay recovery of ₹${debtAmount.toFixed(2)} via ${paymentMethod.type}`,
-          },
-        });
-      });
-
-      result.autopaySucceeded++;
-    } else {
-      // ─── AUTOPAY FAILED -> SUSPEND + BLACKLIST + FINE ────────────────────────
-      await prisma.$transaction(async (tx) => {
-        // 1. Suspend User & Blacklist
-        await tx.user.update({
-          where: { id: user.id },
-          data: {
-            isSuspended: true,
-            isBlacklisted: true,
-          },
-        });
-
-        // 2. Create Suspension Record for each registered vehicle
-        for (const vehicle of user.vehicles) {
-          await tx.suspensionRecord.create({
-            data: {
-              userId: user.id,
-              vehicleId: vehicle.id,
-              reason: 'AUTOPAY_FAILURE_UNPAID_DEBT',
-              fineAmount: DEFAULT_AUTOPAY_FINE,
-              isPaid: false,
-              isResolved: false,
+        const wallet = await tx.wallet.findFirst({
+          where: { id: walletId, ...expiredDebtWhere(now) },
+          include: {
+            linkedPaymentMethod: true,
+            user: {
+              include: {
+                paymentMethods: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }] },
+              },
             },
+          },
+        });
+        if (!wallet) return 'skipped' as const; // repaid or processed by another run meanwhile
+
+        const debtAmount = Math.abs(Number(wallet.balance));
+        const paymentMethod = wallet.linkedPaymentMethod || wallet.user.paymentMethods[0] || null;
+
+        const charge = await chargeAutopay({
+          paymentMethod,
+          autopayAuthorized: wallet.autopayAuthorized,
+          amountRupees: debtAmount,
+          walletId: wallet.id,
+        });
+
+        if (charge.status === 'succeeded') {
+          await creditWallet(tx, {
+            walletId: wallet.id,
+            amount: debtAmount,
+            type: TransactionType.AUTOPAY,
+            description: `Autopay recovery of ₹${debtAmount.toFixed(2)} via ${paymentMethod!.type} (Ref: ${charge.reference})`,
           });
+          return 'succeeded' as const;
         }
 
-        // 3. Add fine to wallet debt
-        const newBalanceWithFine = Number(wallet.balance) - DEFAULT_AUTOPAY_FINE;
-        await tx.wallet.update({
-          where: { id: wallet.id },
+        if (charge.status === 'pending') {
+          await tx.parkingSession.updateMany({
+            where: { userId: wallet.userId, paymentStatus: PaymentStatus.DEBT },
+            data: { paymentStatus: PaymentStatus.AUTOPAY_PENDING },
+          });
+          return 'pending' as const;
+        }
+
+        // ─── Autopay failed: suspend + blacklist + single fine ────────────────
+        await tx.user.update({
+          where: { id: wallet.userId },
+          data: { isSuspended: true, isBlacklisted: true },
+        });
+
+        await tx.suspensionRecord.create({
           data: {
-            balance: newBalanceWithFine,
+            userId: wallet.userId,
+            vehicleId: null,
+            reason: `AUTOPAY_FAILURE_UNPAID_DEBT (${charge.reason})`,
+            fineAmount: DEBT_FINE_AMOUNT,
           },
         });
 
-        // 4. Record Fine transaction
-        await tx.walletTransaction.create({
-          data: {
-            walletId: wallet.id,
-            type: TransactionType.FINE,
-            amount: DEFAULT_AUTOPAY_FINE,
-            description: `Non-repayment penalty fine of ₹${DEFAULT_AUTOPAY_FINE.toFixed(2)} applied due to autopay failure.`,
-          },
+        await debitWallet(tx, {
+          userId: wallet.userId,
+          amount: DEBT_FINE_AMOUNT,
+          type: TransactionType.FINE,
+          at: now,
+          description: `Non-repayment penalty fine of ₹${DEBT_FINE_AMOUNT.toFixed(2)} (debt of ₹${debtAmount.toFixed(2)} unpaid after deadline; ${charge.reason}).`,
         });
-      });
 
-      result.autopayFailed++;
-      result.suspendedUsers.push(user.id);
+        await tx.parkingSession.updateMany({
+          where: {
+            userId: wallet.userId,
+            paymentStatus: { in: [PaymentStatus.DEBT, PaymentStatus.AUTOPAY_PENDING] },
+          },
+          data: { paymentStatus: PaymentStatus.FINED },
+        });
+
+        return 'failed' as const;
+      }, { timeout: 15_000 });
+
+      if (outcome === 'succeeded') result.autopaySucceeded++;
+      if (outcome === 'pending') result.autopayPending++;
+      if (outcome === 'failed') {
+        result.autopayFailed++;
+        const wallet = await prisma.wallet.findUnique({ where: { id: walletId }, select: { userId: true } });
+        if (wallet) result.suspendedUsers.push(wallet.userId);
+      }
+    } catch (err) {
+      console.error(`[DebtWorker] Failed to process wallet ${walletId}:`, err);
     }
   }
 

@@ -286,7 +286,7 @@ enum PaymentStatus {
 model SuspensionRecord {
   id          String    @id @default(uuid())
   userId      String
-  vehicleId   String
+  vehicleId   String?   // null = account-level suspension (all vehicles blocked via user.isBlacklisted)
   reason      String    // e.g. "AUTOPAY_FAILURE"
   fineAmount  Decimal   @default(0) @db.Decimal(10, 2)
   isPaid      Boolean   @default(false)
@@ -294,5 +294,5 @@ model SuspensionRecord {
   createdAt   DateTime  @default(now())
 
   user        User      @relation(fields: [userId], references: [id])
-  vehicle     Vehicle   @relation(fields: [vehicleId], references: [id])
+  vehicle     Vehicle?  @relation(fields: [vehicleId], references: [id])
 }

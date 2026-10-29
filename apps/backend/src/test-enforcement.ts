@@ -1,28 +1,26 @@
 /**
- * Phase 9 Debt, Autopay & Enforcement Worker Automated Test Suite
+ * Debt, Autopay & Enforcement Worker Automated Test Suite
  *
- * Tests:
- * 1. Setup a user whose 48-hour debt window has expired (debtDeadline in the past)
- * 2. Autopay Success scenario:
- *    - Linked payment method present
- *    - Autopay triggers, clears debt, marks transaction, user remains active
- * 3. Autopay Failure scenario:
- *    - No payment method / payment declined
- *    - User account marked suspended (isSuspended = true)
- *    - License plate blacklisted (isBlacklisted = true)
- *    - Penalty fine assessed (SuspensionRecord created + ₹100 fine added to debt)
- * 4. Re-entry enforcement guard:
- *    - Suspended/blacklisted user attempts entry at facility -> strictly rejected (403 Forbidden)
- * 5. Reinstatement workflow:
- *    - User tops up wallet to clear debt + fines
- *    - Account suspension lifted, blacklisted vehicle cleared
- *    - User successfully re-enters facility
+ * Each user builds real debt (enter + exit with ₹0), then the 48h deadline is backdated.
+ * 1. Autopay success: saved payment method + autopay authorised
+ *    -> AUTOPAY credit, wallet back to ₹0, debt window closed, DEBT session -> PAID.
+ * 2. Autopay failure: no payment method
+ *    -> suspended + blacklisted, ONE account-level SuspensionRecord, ONE ₹DEBT_FINE_AMOUNT
+ *       FINE transaction, DEBT session -> FINED.
+ * 3. Re-running the worker does not fine again.
+ * 4. Two overlapping worker runs process a wallet exactly once (row lock).
+ * 5. Suspended user is refused at the entry gate (403).
+ * 6. Wallet API exposes the fine amount and suspension state.
+ * 7. Topping up the full debt + fine reinstates the account and marks sessions PAID.
+ * 8. Reinstated user can enter again.
+ *
+ * Needs ALLOW_SIMULATED_PAYMENTS=true (simulated top-up orders).
  */
 
 import http from 'http';
-import { app, httpServer } from '../src/index';
+import { httpServer } from '../src/index';
 import { prisma } from '../src/utils/prisma';
-import { processExpiredDebts, reinstateSuspendedAccount } from '../src/services/debtWorker';
+import { processExpiredDebts, DEBT_FINE_AMOUNT } from '../src/services/debtWorker';
 import { GateType } from '@prisma/client';
 
 let server: http.Server;
@@ -39,203 +37,162 @@ function makeRequest(
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
         try {
-          const parsed = JSON.parse(data);
-          resolve({ statusCode: res.statusCode || 500, data: parsed });
+          resolve({ statusCode: res.statusCode || 500, data: JSON.parse(data) });
         } catch {
           resolve({ statusCode: res.statusCode || 500, data });
         }
       });
     });
-
     req.on('error', (err) => reject(err));
-
-    if (bodyData) {
-      req.write(JSON.stringify(bodyData));
-    }
+    if (bodyData) req.write(JSON.stringify(bodyData));
     req.end();
   });
 }
 
+const authed = (token: string, path: string, method = 'GET') => ({
+  path,
+  method,
+  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+});
+
+function assert(cond: unknown, message: string, detail?: unknown): void {
+  if (!cond) throw new Error(`${message}${detail !== undefined ? `: ${JSON.stringify(detail)}` : ''}`);
+  console.log(`   ✅ ${message}`);
+}
+
+let seq = 0;
+async function driverWithDebt(entryQr: string, exitQr: string, tag: string) {
+  const n = `${Date.now().toString().slice(-6)}${++seq}`;
+  const reg = await makeRequest(
+    { path: '/api/auth/register', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    { name: `Debt ${tag}`, email: `debt_${tag}_${n}@example.test`, phone: `8${n}000`.slice(0, 10), password: 'Password123!', tcAccepted: true }
+  );
+  const token: string = reg.data.data.token;
+  const userId: string = reg.data.data.user.id;
+  const car = await makeRequest(authed(token, '/api/vehicles', 'POST'), { licensePlate: `DB${tag}${n}`.slice(0, 12) });
+  const vehicleId: string = car.data.data.id;
+
+  await makeRequest(authed(token, '/api/sessions/entry', 'POST'), { qrCodeData: entryQr, vehicleId });
+  const exit = await makeRequest(authed(token, '/api/sessions/exit', 'POST'), { qrCodeData: exitQr, vehicleId });
+  const sessionId: string = exit.data.data.session.id;
+  const fee: number = exit.data.data.session.totalFee;
+
+  // Expire the 48h window
+  await prisma.wallet.update({
+    where: { userId },
+    data: {
+      debtCreatedAt: new Date(Date.now() - 50 * 60 * 60 * 1000),
+      debtDeadline: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    },
+  });
+  return { token, userId, vehicleId, sessionId, fee };
+}
+
 async function runTests() {
-  console.log('🧪 Starting Phase 9 Debt & Autopay Worker Tests...\n');
+  console.log('🧪 Starting Debt, Autopay & Enforcement Tests...\n');
 
   await new Promise<void>((resolve) => {
     server = httpServer.listen(0, '127.0.0.1', () => {
-      const address = server.address() as any;
-      port = address.port;
-      console.log(`[Test Server] Running on http://127.0.0.1:${port}`);
+      port = (server.address() as any).port;
       resolve();
     });
   });
 
   try {
-    const mall = await prisma.parkingFacility.findFirst({
-      where: { name: 'Phoenix Mall' },
-      include: { gates: true },
-    });
+    const mall = await prisma.parkingFacility.findFirst({ where: { name: 'Phoenix Mall' }, include: { gates: true } });
     if (!mall) throw new Error('Phoenix Mall not found.');
+    const entryQr = mall.gates.find((g) => g.gateType === GateType.ENTRY)!.qrCodeData;
+    const exitQr = mall.gates.find((g) => g.gateType === GateType.EXIT)!.qrCodeData;
 
-    const entryGate = mall.gates.find((g) => g.gateType === GateType.ENTRY)!;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // TEST CASE A: AUTOPAY SUCCESS
-    // ─────────────────────────────────────────────────────────────────────────
-    console.log('1️⃣ Setting up User A with an expired debt (-₹60) and linked card token...');
-    const userAEmail = `autopay_success_${Date.now()}@example.com`;
-    const regResA = await makeRequest(
-      { path: '/api/auth/register', method: 'POST', headers: { 'Content-Type': 'application/json' } },
-      { name: 'Bruce Wayne', email: userAEmail, phone: `91${Math.floor(10000000 + Math.random() * 90000000)}`, password: 'Password123!', tcAccepted: true }
-    );
-    const userAId = regResA.data.data.user.id;
-
-    // Link a simulated payment method
-    const pmA = await prisma.paymentMethod.create({
-      data: {
-        userId: userAId,
-        type: 'CARD',
-        razorpayToken: 'token_card_success_123',
-        isPrimary: true,
-      },
+    // 1. Autopay success
+    console.log('1️⃣ Autopay success (saved card, autopay authorised)...');
+    const a = await driverWithDebt(entryQr, exitQr, 'A');
+    await prisma.paymentMethod.create({
+      data: { userId: a.userId, type: 'CARD', razorpayToken: 'token_card_success_123', isPrimary: true },
     });
+    await processExpiredDebts();
+    const walletA = await prisma.wallet.findUnique({ where: { userId: a.userId } });
+    assert(walletA?.balance.toNumber() === 0 && walletA.debtDeadline === null, 'Debt recovered, balance ₹0, window closed', walletA);
+    const autopayTxns = await prisma.walletTransaction.count({ where: { walletId: walletA!.id, type: 'AUTOPAY' } });
+    assert(autopayTxns === 1, 'Exactly one AUTOPAY transaction', autopayTxns);
+    const sessionA = await prisma.parkingSession.findUnique({ where: { id: a.sessionId } });
+    assert(sessionA?.paymentStatus === 'PAID', 'DEBT session marked PAID', sessionA?.paymentStatus);
+    const userA = await prisma.user.findUnique({ where: { id: a.userId } });
+    assert(!userA?.isSuspended, 'User A not suspended');
 
-    // Put User A in expired debt (deadline set 2 hours ago)
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    const fiftyHoursAgo = new Date(Date.now() - 50 * 60 * 60 * 1000);
-
-    await prisma.wallet.update({
-      where: { userId: userAId },
-      data: {
-        balance: -60,
-        debtCreatedAt: fiftyHoursAgo,
-        debtDeadline: twoHoursAgo,
-        linkedPaymentMethodId: pmA.id,
-      },
+    // 2. Autopay failure
+    console.log('\n2️⃣ Autopay failure (no payment method)...');
+    const b = await driverWithDebt(entryQr, exitQr, 'B');
+    await processExpiredDebts();
+    const userB = await prisma.user.findUnique({
+      where: { id: b.userId },
+      include: { wallet: true, suspensionRecords: true },
     });
-
-    console.log('   ✅ Triggering debt worker (rate 1.0 = 100% success for card holders)...');
-    const workerResultA = await processExpiredDebts(1.0);
-
-    const walletAfterA = await prisma.wallet.findUnique({ where: { userId: userAId } });
-    if (walletAfterA?.balance.toNumber() === 0 && walletAfterA.debtDeadline === null) {
-      console.log('   ✅ Autopay recovered ₹60 from linked card. Debt cleared, balance restored to ₹0.');
-    } else {
-      throw new Error(`Autopay success test failed: balance is ${walletAfterA?.balance}`);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // TEST CASE B: AUTOPAY FAILURE -> SUSPENSION, BLACKLIST & FINE
-    // ─────────────────────────────────────────────────────────────────────────
-    console.log('\n2️⃣ Setting up User B with expired debt (-₹45) and NO payment method (Autopay Fails)...');
-    const userBEmail = `autopay_fail_${Date.now()}@example.com`;
-    const regResB = await makeRequest(
-      { path: '/api/auth/register', method: 'POST', headers: { 'Content-Type': 'application/json' } },
-      { name: 'Joker', email: userBEmail, phone: `90${Math.floor(10000000 + Math.random() * 90000000)}`, password: 'Password123!', tcAccepted: true }
+    const expectedBalance = -(b.fee + DEBT_FINE_AMOUNT);
+    assert(userB?.isSuspended && userB.isBlacklisted, 'Account suspended and blacklisted');
+    assert(
+      userB!.suspensionRecords.length === 1 &&
+        userB!.suspensionRecords[0].vehicleId === null &&
+        userB!.suspensionRecords[0].fineAmount.toNumber() === DEBT_FINE_AMOUNT,
+      `One account-level SuspensionRecord with ₹${DEBT_FINE_AMOUNT} fine`,
+      userB!.suspensionRecords
     );
-    const tokenB = regResB.data.data.token;
-    const userBId = regResB.data.data.user.id;
+    assert(userB!.wallet!.balance.toNumber() === expectedBalance, `Balance is -(fee + fine) = ₹${expectedBalance}`, userB!.wallet!.balance);
+    const sessionB = await prisma.parkingSession.findUnique({ where: { id: b.sessionId } });
+    assert(sessionB?.paymentStatus === 'FINED', 'DEBT session marked FINED', sessionB?.paymentStatus);
 
-    // Register Car B
-    const carBPlate = `DL09P9${Math.floor(1000 + Math.random() * 9000)}`;
-    const carBRes = await makeRequest(
-      { path: '/api/vehicles', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenB}` } },
-      { licensePlate: carBPlate }
-    );
-    const vehicleBId = carBRes.data.data.id;
+    // 3. No double fine
+    console.log('\n3️⃣ Re-running the worker...');
+    await processExpiredDebts();
+    const fines = await prisma.walletTransaction.count({ where: { walletId: userB!.wallet!.id, type: 'FINE' } });
+    assert(fines === 1, 'Still exactly one FINE transaction', fines);
 
-    // Put User B in expired debt
-    await prisma.wallet.update({
-      where: { userId: userBId },
-      data: {
-        balance: -45,
-        debtCreatedAt: fiftyHoursAgo,
-        debtDeadline: twoHoursAgo,
-      },
-    });
+    // 4. Overlapping runs
+    console.log('\n4️⃣ Two overlapping worker runs...');
+    const c = await driverWithDebt(entryQr, exitQr, 'C');
+    await Promise.all([processExpiredDebts(), processExpiredDebts()]);
+    const walletC = await prisma.wallet.findUnique({ where: { userId: c.userId } });
+    const finesC = await prisma.walletTransaction.count({ where: { walletId: walletC!.id, type: 'FINE' } });
+    const recordsC = await prisma.suspensionRecord.count({ where: { userId: c.userId } });
+    assert(finesC === 1 && recordsC === 1, 'Wallet fined and suspended exactly once', { finesC, recordsC });
 
-    console.log('   ✅ Triggering debt worker (expect failure and enforcement)...');
-    const workerResultB = await processExpiredDebts(0.0); // 0% success force failure
+    // 5. Entry blocked
+    console.log('\n5️⃣ Suspended user at the entry gate...');
+    const blocked = await makeRequest(authed(b.token, '/api/sessions/entry', 'POST'), { qrCodeData: entryQr, vehicleId: b.vehicleId });
+    assert(blocked.statusCode === 403 && blocked.data.isSuspended === true, 'Entry refused with 403', blocked);
 
-    const userBCheck = await prisma.user.findUnique({
-      where: { id: userBId },
-      include: {
-        wallet: true,
-        suspensionRecords: true,
-      },
-    });
-
-    if (
-      userBCheck?.isSuspended === true &&
-      userBCheck.isBlacklisted === true &&
-      userBCheck.suspensionRecords.length > 0 &&
-      userBCheck.wallet?.balance.toNumber() === -145 // -45 original debt - 100 fine
-    ) {
-      console.log('   ✅ Enforcement Policy Applied:');
-      console.log(`   ✅ isSuspended = true, isBlacklisted = true`);
-      console.log(`   ✅ Fine assessed: ₹100. Total debt updated: ₹${userBCheck.wallet.balance}`);
-      console.log(`   ✅ SuspensionRecord logged: "${userBCheck.suspensionRecords[0].reason}"`);
-    } else {
-      throw new Error(`Enforcement test failed: ${JSON.stringify(userBCheck)}`);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // TEST CASE C: SUSPENDED USER ATTEMPTS RE-ENTRY (Strict 403 Forbidden)
-    // ─────────────────────────────────────────────────────────────────────────
-    console.log('\n3️⃣ Suspended user attempts entering facility with blacklisted car...');
-    const reEntryRes = await makeRequest(
-      { path: '/api/sessions/entry', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenB}` } },
-      { qrCodeData: entryGate.qrCodeData, vehicleId: vehicleBId }
+    // 6. Wallet API
+    const walletApi = await makeRequest(authed(b.token, '/api/wallet'));
+    assert(
+      walletApi.data.data.rules.fineAmount === DEBT_FINE_AMOUNT && walletApi.data.data.isSuspended === true,
+      'Wallet API shows fine amount and suspension',
+      walletApi.data.data
     );
 
-    if (reEntryRes.statusCode === 403 && reEntryRes.data.isSuspended === true) {
-      console.log('   ✅ Re-entry blocked at gate with 403 Forbidden: "Account suspended due to unpaid debt".');
-    } else {
-      throw new Error(`Expected 403 Forbidden on suspended user entry, got ${reEntryRes.statusCode}`);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // TEST CASE D: REINSTATEMENT (User repays full debt + fine via Top-up)
-    // ─────────────────────────────────────────────────────────────────────────
-    console.log('\n4️⃣ User B repays full debt + fine (Tops up ₹150 against -₹145 balance)...');
-    const repayRes = await makeRequest(
-      { path: '/api/wallet/topup', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenB}` } },
-      { amount: 150 }
-    );
-
-    if (repayRes.statusCode === 200 && repayRes.data.data?.isReinstated === true && repayRes.data.data?.newBalance === 5) {
-      console.log('   ✅ Top-up successful! New positive balance: ₹5.00.');
-      console.log('   ✅ Automatic Reinstatement triggered: isReinstated = true.');
-    } else {
-      throw new Error(`Reinstatement topup failed: ${JSON.stringify(repayRes.data)}`);
-    }
-
-    // Verify DB flags cleared
-    const userBReinstated = await prisma.user.findUnique({
-      where: { id: userBId },
+    // 7. Reinstatement
+    console.log('\n6️⃣ Repaying debt + fine...');
+    const owed = Math.abs(expectedBalance);
+    const order = await makeRequest(authed(b.token, '/api/wallet/create-order', 'POST'), { amount: owed + 10 });
+    const repay = await makeRequest(authed(b.token, '/api/wallet/topup', 'POST'), { razorpayOrderId: order.data.data?.orderId });
+    assert(repay.statusCode === 200 && repay.data.data.isReinstated === true && repay.data.data.newBalance === 10, 'Top-up reinstates account, balance ₹10', repay.data);
+    const userBAfter = await prisma.user.findUnique({
+      where: { id: b.userId },
       include: { suspensionRecords: { where: { isResolved: false } } },
     });
+    assert(!userBAfter?.isSuspended && !userBAfter?.isBlacklisted && userBAfter?.suspensionRecords.length === 0, 'Flags cleared, record resolved');
+    const sessionBAfter = await prisma.parkingSession.findUnique({ where: { id: b.sessionId } });
+    assert(sessionBAfter?.paymentStatus === 'PAID', 'FINED session marked PAID after repayment', sessionBAfter?.paymentStatus);
 
-    if (!userBReinstated?.isSuspended && !userBReinstated?.isBlacklisted && userBReinstated?.suspensionRecords.length === 0) {
-      console.log('   ✅ Verified in DB: user is no longer suspended or blacklisted.');
-    } else {
-      throw new Error('User still has suspension flags active.');
-    }
+    // 8. Re-entry
+    console.log('\n7️⃣ Reinstated user enters again...');
+    const reEntry = await makeRequest(authed(b.token, '/api/sessions/entry', 'POST'), { qrCodeData: entryQr, vehicleId: b.vehicleId });
+    assert(reEntry.statusCode === 201, 'Re-entry permitted', reEntry.data);
+    await makeRequest(authed(b.token, '/api/sessions/exit', 'POST'), { qrCodeData: exitQr, vehicleId: b.vehicleId });
 
-    // User B enters facility successfully now!
-    console.log('\n5️⃣ Reinstated User B enters facility again...');
-    const reEntryAllowedRes = await makeRequest(
-      { path: '/api/sessions/entry', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenB}` } },
-      { qrCodeData: entryGate.qrCodeData, vehicleId: vehicleBId }
-    );
-
-    if (reEntryAllowedRes.statusCode === 201 && reEntryAllowedRes.data.data?.assignedSlot?.slotNumber) {
-      console.log(`   ✅ Re-entry permitted! Slot allocated: ${reEntryAllowedRes.data.data.assignedSlot.slotNumber}.`);
-    } else {
-      throw new Error(`Re-entry after reinstatement failed: ${JSON.stringify(reEntryAllowedRes.data)}`);
-    }
-
-    console.log('\n🎉 ALL PHASE 9 DEBT, AUTOPAY & ENFORCEMENT TESTS PASSED CLEANLY!\n');
+    console.log('\n🎉 ALL DEBT, AUTOPAY & ENFORCEMENT TESTS PASSED CLEANLY!\n');
   } finally {
     server.close();
+    await prisma.$disconnect();
   }
 }
 

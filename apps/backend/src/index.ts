@@ -123,6 +123,9 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // ─── Debt Worker Scheduler ────────────────────────────────────────────────────
+// The in-process flag stops overlapping runs on this instance; processExpiredDebts
+// also row-locks each wallet, so overlapping instances can't double-process.
+const DEBT_WORKER_INTERVAL_MS = 30 * 60 * 1000;
 let debtWorkerRunning = false;
 
 export async function runDebtWorkerSafe(): Promise<void> {
@@ -136,7 +139,8 @@ export async function runDebtWorkerSafe(): Promise<void> {
     if (result.walletsChecked > 0) {
       console.log(
         `[DebtWorker] Processed ${result.walletsChecked} expired wallets: ` +
-        `${result.autopaySucceeded} autopay recovered, ${result.autopayFailed} failed/suspended.`
+        `${result.autopaySucceeded} autopay recovered, ${result.autopayPending} pending, ` +
+        `${result.autopayFailed} failed/suspended.`
       );
     }
   } catch (err) {
@@ -156,10 +160,10 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}\n`);
   });
 
-  // Delay initial debt worker run by 60s to let DB pool initialize, then repeat every 15 mins
+  // Delay initial debt worker run by 60s to let DB pool initialize, then repeat every 30 mins
   setTimeout(() => {
     runDebtWorkerSafe();
-    setInterval(runDebtWorkerSafe, 15 * 60 * 1000);
+    setInterval(runDebtWorkerSafe, DEBT_WORKER_INTERVAL_MS);
   }, 60_000);
 }
 

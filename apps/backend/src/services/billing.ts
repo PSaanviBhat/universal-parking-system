@@ -57,6 +57,13 @@ export function startOfToday(now = new Date()): Date {
 
 // ─── Wallet ledger ────────────────────────────────────────────────────────────
 
+/** Closed sessions whose charge has not been covered by the wallet yet. */
+export const UNPAID_STATUSES: PaymentStatus[] = [
+  PaymentStatus.DEBT,
+  PaymentStatus.AUTOPAY_PENDING,
+  PaymentStatus.FINED,
+];
+
 export interface CreditWalletArgs {
   walletId: string;
   amount: number;
@@ -92,6 +99,14 @@ export async function creditWallet(tx: Tx, args: CreditWalletArgs) {
         })
       : credited;
 
+  // Once the wallet is back to >= 0, every outstanding charge has been covered.
+  if (wasInDebt && isCleared) {
+    await tx.parkingSession.updateMany({
+      where: { userId: credited.userId, paymentStatus: { in: UNPAID_STATUSES } },
+      data: { paymentStatus: PaymentStatus.PAID },
+    });
+  }
+
   const transaction = await tx.walletTransaction.create({
     data: {
       walletId,
@@ -109,6 +124,8 @@ export interface DebitWalletArgs {
   userId: string;
   amount: number;
   description: string;
+  /** Defaults to PARKING_CHARGE. */
+  type?: TransactionType;
   sessionId?: string;
   at?: Date;
 }
@@ -145,7 +162,7 @@ export async function debitWallet(tx: Tx, args: DebitWalletArgs) {
     data: {
       walletId: wallet.id,
       sessionId: args.sessionId,
-      type: TransactionType.PARKING_CHARGE,
+      type: args.type ?? TransactionType.PARKING_CHARGE,
       amount: args.amount,
       description: args.description,
     },

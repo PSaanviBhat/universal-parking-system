@@ -4,6 +4,7 @@ import { authGuard, AuthenticatedRequest } from '../middleware/auth';
 import { PaymentOrderStatus, Prisma } from '@prisma/client';
 import { razorpayClient, simulatedPaymentsAllowed, verifyRazorpaySignature } from '../utils/razorpay';
 import { creditWallet } from '../services/billing';
+import { DEBT_FINE_AMOUNT } from '../services/debtWorker';
 
 export const walletRouter = Router();
 
@@ -37,6 +38,7 @@ walletRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise<
             isPrimary: true,
           },
         },
+        user: { select: { isSuspended: true } },
       },
     });
 
@@ -44,6 +46,8 @@ walletRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise<
       res.status(404).json({ success: false, message: 'Wallet not found.' });
       return;
     }
+
+    const savedPaymentMethods = await prisma.paymentMethod.count({ where: { userId } });
 
     const balanceNum = Number(wallet.balance);
     const isDebt = balanceNum < 0;
@@ -68,11 +72,16 @@ walletRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise<
         debtDeadline: wallet.debtDeadline,
         debtHoursRemaining,
         isDebtExpired,
+        isSuspended: wallet.user.isSuspended,
         autopayAuthorized: wallet.autopayAuthorized,
+        // Autopay can only recover debt when the user has authorised it AND saved a payment method
+        autopayReady: wallet.autopayAuthorized && savedPaymentMethods > 0,
         linkedPaymentMethod: wallet.linkedPaymentMethod,
         rules: {
           minimumTopUp: MINIMUM_WALLET_TOPUP,
+          maximumTopUp: MAXIMUM_WALLET_TOPUP,
           debtWindowHours: DEBT_REPAYMENT_WINDOW_HOURS,
+          fineAmount: DEBT_FINE_AMOUNT,
         },
       },
     });
