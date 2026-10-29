@@ -4,6 +4,15 @@ import { prisma } from '../utils/prisma';
 export const healthRouter = Router();
 
 /**
+ * GET /health/live
+ * Liveness only — no database query. Point uptime pingers here so they keep the
+ * Render instance awake without also waking the Neon database every few minutes.
+ */
+healthRouter.get('/live', (_req: Request, res: Response) => {
+  res.status(200).json({ status: 'ok', uptime: Math.floor(process.uptime()) });
+});
+
+/**
  * GET /health
  * Returns system health status including DB connectivity.
  * Used by monitoring tools and deployment checks.
