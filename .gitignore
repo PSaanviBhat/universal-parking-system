@@ -15,3 +15,4 @@ Thumbs.db
 build/
 *.g.dart
 .npmrc
+.vscode/
